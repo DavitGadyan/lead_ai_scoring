@@ -1,0 +1,46 @@
+{
+  "name": "Postgres New Lead Scoring",
+  "nodes": [
+    {
+      "parameters": {
+        "schema": "public",
+        "table": "inbound_leads",
+        "operation": "insert"
+      },
+      "id": "postgres-trigger",
+      "name": "Postgres Trigger",
+      "type": "n8n-nodes-base.postgresTrigger",
+      "typeVersion": 1,
+      "position": [280, 260]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.API_BASE_URL}}/api/score/lead",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"external_id\": $json.id,\n  \"full_name\": $json.full_name,\n  \"email\": $json.email,\n  \"company\": $json.company,\n  \"job_title\": $json.job_title,\n  \"industry\": $json.industry,\n  \"country\": $json.country,\n  \"employee_count\": $json.employee_count,\n  \"annual_revenue\": $json.annual_revenue,\n  \"budget_range\": $json.budget_range,\n  \"notes\": $json.notes,\n  \"source_type\": \"postgres\",\n  \"source_name\": \"n8n_postgres_trigger\"\n}"
+      },
+      "id": "score-lead",
+      "name": "Score Lead",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [560, 260]
+    }
+  ],
+  "connections": {
+    "Postgres Trigger": {
+      "main": [
+        [
+          {
+            "node": "Score Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {}
+}

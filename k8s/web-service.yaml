@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: leadscore-web
+  namespace: leadscore
+spec:
+  selector:
+    app: leadscore-web
+  ports:
+    - port: 3000
+      targetPort: 3000

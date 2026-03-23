@@ -1,0 +1,75 @@
+{
+  "name": "Excel Import to Scoring API",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "lead-import",
+        "httpMethod": "POST",
+        "responseMode": "responseNode"
+      },
+      "id": "webhook",
+      "name": "Import Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [260, 260]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.API_BASE_URL}}/api/imports/excel",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "file",
+              "inputDataFieldName": "data"
+            }
+          ]
+        }
+      },
+      "id": "api-import",
+      "name": "API Excel Import",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [520, 260]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{$json}}"
+      },
+      "id": "respond",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [760, 260]
+    }
+  ],
+  "connections": {
+    "Import Webhook": {
+      "main": [
+        [
+          {
+            "node": "API Excel Import",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "API Excel Import": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {}
+}

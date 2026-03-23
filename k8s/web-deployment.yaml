@@ -1,0 +1,30 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: leadscore-web
+  namespace: leadscore
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: leadscore-web
+  template:
+    metadata:
+      labels:
+        app: leadscore-web
+    spec:
+      containers:
+        - name: web
+          image: ghcr.io/your-org/leadscore-web:latest
+          ports:
+            - containerPort: 3000
+          env:
+            - name: NEXT_PUBLIC_API_BASE_URL
+              value: http://leadscore-api.leadscore.svc.cluster.local:8000
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"

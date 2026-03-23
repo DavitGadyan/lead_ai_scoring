@@ -1,0 +1,19 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-only-from-web
+  namespace: leadscore
+spec:
+  podSelector:
+    matchLabels:
+      app: leadscore-api
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: leadscore-web
+      ports:
+        - protocol: TCP
+          port: 8000

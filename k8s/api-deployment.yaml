@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: leadscore-api
+  namespace: leadscore
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: leadscore-api
+  template:
+    metadata:
+      labels:
+        app: leadscore-api
+    spec:
+      containers:
+        - name: api
+          image: ghcr.io/your-org/leadscore-api:latest
+          ports:
+            - containerPort: 8000
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: leadscore-secrets
+                  key: DATABASE_URL
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: leadscore-secrets
+                  key: OPENAI_API_KEY
+            - name: OPENAI_MODEL
+              valueFrom:
+                secretKeyRef:
+                  name: leadscore-secrets
+                  key: OPENAI_MODEL
+            - name: OPENAI_BASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: leadscore-secrets
+                  key: OPENAI_BASE_URL
+            - name: APP_NAME
+              value: LeadScore AI API
+            - name: LLM_ENABLED
+              value: "true"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
