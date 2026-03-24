@@ -1,8 +1,24 @@
-from fastapi import APIRouter, File, HTTPException, UploadFile
+import json
+import secrets
 
-from ..oauth import build_hubspot_authorize_url, exchange_hubspot_code
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi.responses import HTMLResponse
+
+from ..oauth import (
+    build_hubspot_authorize_url,
+    exchange_hubspot_code,
+    exchange_zoho_code,
+    prepare_zoho_authorize,
+    resolve_zoho_authorize_credentials,
+    zoho_token_accounts_host,
+)
 from ..llm import build_workspace_chat_response, generate_workspace_chat_reply
-from ..memory import append_workspace_conversation, get_workspace_memory, save_workspace_memory
+from ..memory import (
+    append_workspace_conversation,
+    get_workspace_memory,
+    ingest_connector_preview,
+    save_workspace_memory,
+)
 from ..schemas import (
     HubSpotAuthorizeRequest,
     HubSpotAuthorizeResponse,
@@ -24,9 +40,13 @@ from ..schemas import (
     SourceTestResult,
     WorkspaceChatRequest,
     WorkspaceChatResponse,
+    WorkspaceConnectorPreviewIngestRequest,
     WorkspaceMemoryState,
     WorkspaceMemoryUpsertRequest,
+    ZohoAuthorizeRequest,
+    ZohoAuthorizeResponse,
 )
+from ..zoho_oauth_state import pop_zoho_oauth_pending
 from ..services import (
     build_import_result,
     create_source,
@@ -44,6 +64,8 @@ from ..services import (
 )
 
 router = APIRouter(prefix="/api", tags=["lead-scoring"])
+
+ZOHO_OAUTH_MESSAGE_TYPE = "leadscore:zoho-oauth"
 
 
 @router.post("/score/lead", response_model=LeadScoreOut)
@@ -80,6 +102,119 @@ def exchange_hubspot_oauth_code(payload: HubSpotExchangeRequest) -> HubSpotToken
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.post("/oauth/zoho/authorize", response_model=ZohoAuthorizeResponse)
+def zoho_oauth_authorize(payload: ZohoAuthorizeRequest) -> ZohoAuthorizeResponse:
+    client_id, client_secret, accounts_host, redirect_uri = resolve_zoho_authorize_credentials(
+        client_id=payload.client_id,
+        client_secret=payload.client_secret,
+        redirect_uri=payload.redirect_uri,
+        accounts_host=payload.zoho_accounts_host,
+    )
+    if not client_id or not client_secret:
+        raise HTTPException(
+            status_code=400,
+            detail="Zoho client_id and client_secret are required (Connect form or ZOHO_CLIENT_ID / ZOHO_CLIENT_SECRET in API .env).",
+        )
+    if not redirect_uri:
+        raise HTTPException(
+            status_code=400,
+            detail="Zoho redirect_uri is required (Connect form or ZOHO_REDIRECT_URI in API .env, e.g. http://localhost:8000/api/oauth/zoho/callback).",
+        )
+    state = secrets.token_urlsafe(24)
+    authorize_url = prepare_zoho_authorize(
+        client_id=client_id,
+        client_secret=client_secret,
+        redirect_uri=redirect_uri,
+        scope=payload.scope.strip(),
+        accounts_host=accounts_host,
+        state=state,
+    )
+    return ZohoAuthorizeResponse(authorize_url=authorize_url, state=state)
+
+
+@router.get("/oauth/zoho/callback", response_class=HTMLResponse)
+def zoho_oauth_callback(
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    error_description: str | None = None,
+    accounts_server: str | None = Query(None, alias="accounts-server"),
+) -> HTMLResponse:
+    err = error or error_description
+    if err:
+        payload = json.dumps({"type": ZOHO_OAUTH_MESSAGE_TYPE, "error": err})
+        return HTMLResponse(
+            f"""<!DOCTYPE html><html><head><meta charset="utf-8"/><title>Zoho OAuth</title></head><body>
+<script>
+if (window.opener) {{
+  window.opener.postMessage({payload}, "*");
+}}
+window.close();
+</script>
+<p>Authorization was denied. You can close this window.</p>
+</body></html>"""
+        )
+
+    pending = pop_zoho_oauth_pending(state or "")
+    if not pending or not code:
+        return HTMLResponse(
+            "<!DOCTYPE html><html><body><p>Invalid or expired OAuth state. Close this window and start "
+            "Zoho OAuth again from the app.</p></body></html>",
+            status_code=400,
+        )
+
+    token_host = zoho_token_accounts_host(
+        callback_accounts_server=accounts_server,
+        pending_host=pending.accounts_host,
+    )
+    try:
+        tokens = exchange_zoho_code(
+            client_id=pending.client_id,
+            client_secret=pending.client_secret,
+            redirect_uri=pending.redirect_uri,
+            code=code,
+            accounts_host=token_host,
+        )
+    except Exception as exc:
+        payload = json.dumps({"type": ZOHO_OAUTH_MESSAGE_TYPE, "error": str(exc)})
+        return HTMLResponse(
+            f"""<!DOCTYPE html><html><head><meta charset="utf-8"/><title>Zoho OAuth</title></head><body>
+<script>
+if (window.opener) {{
+  window.opener.postMessage({payload}, "*");
+}}
+window.close();
+</script>
+<p>Token exchange failed. You can close this window.</p>
+</body></html>"""
+        )
+
+    api_domain = tokens.api_domain or "https://www.zohoapis.com"
+    if api_domain and not str(api_domain).startswith("http"):
+        api_domain = f"https://{api_domain}"
+
+    data = {
+        "type": ZOHO_OAUTH_MESSAGE_TYPE,
+        "access_token": tokens.access_token,
+        "refresh_token": tokens.refresh_token,
+        "api_domain": api_domain,
+        "zoho_accounts_host": token_host,
+        "expires_in": tokens.expires_in,
+    }
+    payload = json.dumps(data)
+    return HTMLResponse(
+        f"""<!DOCTYPE html><html><head><meta charset="utf-8"/><title>Zoho OAuth</title></head><body>
+<script>
+if (window.opener) {{
+  window.opener.postMessage({payload}, "*");
+}}
+window.close();
+</script>
+<p>Connected to Zoho. You can close this window.</p>
+</body></html>"""
+    )
+
+
 @router.post("/hubspot/preview", response_model=HubSpotPreviewResponse)
 def preview_hubspot(payload: SourceIn) -> HubSpotPreviewResponse:
     try:
@@ -104,6 +239,14 @@ def get_workspace_memory_state(session_id: str) -> WorkspaceMemoryState:
 @router.post("/workspace-memory", response_model=WorkspaceMemoryState)
 def upsert_workspace_memory(payload: WorkspaceMemoryUpsertRequest) -> WorkspaceMemoryState:
     return save_workspace_memory(payload)
+
+
+@router.post("/workspace-memory/connector-preview", response_model=WorkspaceMemoryState)
+def workspace_memory_connector_preview(payload: WorkspaceConnectorPreviewIngestRequest) -> WorkspaceMemoryState:
+    try:
+        return ingest_connector_preview(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/workspace-chat", response_model=WorkspaceChatResponse)

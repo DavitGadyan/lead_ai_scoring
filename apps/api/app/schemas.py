@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class LeadCanonical(BaseModel):
@@ -32,7 +32,11 @@ class ImportResult(BaseModel):
 
 class SourceConfig(BaseModel):
     base_url: str | None = None
+    """Zoho: CRM API base, e.g. https://www.zohoapis.com (from OAuth api_domain)."""
+
     redirect_uri: str | None = None
+    zoho_accounts_host: str | None = None
+    """Hostname only, e.g. accounts.zoho.com or accounts.zoho.eu — used for Zoho token refresh."""
     connection_url: str | None = None
     query: str | None = None
     database: str | None = None
@@ -74,6 +78,10 @@ class SourceTestResult(BaseModel):
     sample_count: int
     sample_fields: list[str]
     normalized_fields: list[str]
+    preview_rows: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Normalized lead-shaped dicts for workspace / Talk to AI preview ingest.",
+    )
 
 
 class HubSpotPreviewResponse(SourceTestResult):
@@ -125,6 +133,34 @@ class HubSpotTokenResponse(BaseModel):
     token_type: str | None = None
 
 
+class ZohoAuthorizeRequest(BaseModel):
+    """All fields optional if ``ZOHO_*`` defaults are set in the API ``.env``."""
+
+    client_id: str | None = None
+    client_secret: str | None = None
+    redirect_uri: str | None = None
+    zoho_accounts_host: str | None = None
+    scope: str = (
+        "ZohoCRM.modules.leads.READ ZohoCRM.modules.contacts.READ"
+    )
+
+
+class ZohoAuthorizeResponse(BaseModel):
+    authorize_url: str
+    state: str
+
+
+class ZohoTokenResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    access_token: str
+    refresh_token: str | None = None
+    expires_in: int | None = None
+    token_type: str | None = None
+    api_domain: str | None = None
+    """e.g. https://www.zohoapis.com — use as CRM API base_url."""
+
+
 class HubSpotBrowseRequest(BaseModel):
     client_id: str | None = None
     client_secret: str | None = None
@@ -167,13 +203,26 @@ class WorkspaceMemoryState(BaseModel):
     conversation: list[WorkspaceConversationMessage] = Field(default_factory=list)
     updated_at: datetime | None = None
 
-    @model_validator(mode="after")
-    def sync_hubspot_connector_slice(self) -> "WorkspaceMemoryState":
-        cd = dict(self.connector_datasets)
-        hub_cd = cd.get("hubspot")
-        contacts = list(self.hubspot_data.contacts)
-        companies = list(self.hubspot_data.companies)
+    @model_validator(mode="before")
+    @classmethod
+    def sync_hubspot_connector_slice(cls, data: Any) -> Any:
+        """Keep hubspot_data and connector_datasets['hubspot'] aligned (before init — avoids Pydantic v2 warning)."""
+        if not isinstance(data, dict):
+            return data
+        out = dict(data)
+        cd = dict(out.get("connector_datasets") or {})
 
+        hs = out.get("hubspot_data")
+        if isinstance(hs, dict):
+            contacts = list(hs.get("contacts") or [])
+            companies = list(hs.get("companies") or [])
+        elif hasattr(hs, "contacts"):
+            contacts = list(hs.contacts or [])
+            companies = list(hs.companies or [])
+        else:
+            contacts, companies = [], []
+
+        hub_cd = cd.get("hubspot")
         if isinstance(hub_cd, dict):
             contacts = list(hub_cd.get("contacts") or contacts)
             companies = list(hub_cd.get("companies") or companies)
@@ -181,8 +230,9 @@ class WorkspaceMemoryState(BaseModel):
         elif contacts or companies:
             cd["hubspot"] = {"contacts": contacts, "companies": companies}
 
-        new_hs = WorkspaceHubSpotData(contacts=contacts, companies=companies)
-        return self.model_copy(update={"connector_datasets": cd, "hubspot_data": new_hs})
+        out["connector_datasets"] = cd
+        out["hubspot_data"] = {"contacts": contacts, "companies": companies}
+        return out
 
 
 class WorkspaceMemoryUpsertRequest(BaseModel):
@@ -193,6 +243,22 @@ class WorkspaceMemoryUpsertRequest(BaseModel):
     connector_datasets: dict[str, Any] | None = None
     knowledge_graph_summary: str | None = None
     conversation: list[WorkspaceConversationMessage] | None = None
+
+
+class WorkspaceConnectorPreviewIngestRequest(BaseModel):
+    """Merge CRM preview rows into ``connector_datasets[connector_key]`` for Talk to AI context."""
+
+    session_id: str
+    connector_key: str = Field(
+        ...,
+        description="Stable key, usually the source_type (hubspot, zoho, salesforce, ...).",
+    )
+    contacts: list[dict[str, Any]] = Field(default_factory=list)
+    companies: list[dict[str, Any]] = Field(default_factory=list)
+    records: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="If contacts is empty, these are stored as contacts for LLM context.",
+    )
 
 
 class WorkspaceChatRequest(BaseModel):

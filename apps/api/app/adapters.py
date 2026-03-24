@@ -7,7 +7,18 @@ import pandas as pd
 from pymongo import MongoClient
 from sqlalchemy import create_engine, text
 
-from .oauth import refresh_hubspot_token
+from .oauth import normalize_zoho_accounts_host, refresh_hubspot_token, refresh_zoho_token
+
+
+def _zoho_client_credentials(config: SourceConfig) -> tuple[str, str, str]:
+    """OAuth client id/secret and accounts host from source config, with API .env fallback."""
+    from .config import get_settings
+
+    s = get_settings()
+    cid = (config.client_id or "").strip() or (s.zoho_client_id or "").strip()
+    sec = (config.client_secret or "").strip() or (s.zoho_client_secret or "").strip()
+    host = normalize_zoho_accounts_host(config.zoho_accounts_host or s.zoho_accounts_host)
+    return cid, sec, host
 from .schemas import SourceConfig
 
 
@@ -195,19 +206,51 @@ class DynamicsAdapter(SourceAdapter):
         return response.json().get("value", [])
 
 
+def _resolve_zoho_access_token(config: SourceConfig) -> str:
+    access_token = config.access_token
+    accounts_host = normalize_zoho_accounts_host(config.zoho_accounts_host)
+    if not access_token and config.refresh_token and config.client_id and config.client_secret:
+        refreshed = refresh_zoho_token(
+            client_id=config.client_id,
+            client_secret=config.client_secret,
+            refresh_token=config.refresh_token,
+            accounts_host=accounts_host,
+        )
+        access_token = refreshed.access_token
+
+    if not access_token:
+        raise ValueError(
+            "Zoho requires an OAuth access token (use Connect Zoho CRM) or refresh_token with client credentials"
+        )
+    return access_token
+
+
 class ZohoAdapter(SourceAdapter):
     def load_records(self, config: SourceConfig) -> list[dict]:
-        if not config.access_token:
-            raise ValueError("Zoho requires access_token")
-
+        access_token = _resolve_zoho_access_token(config)
         base_url = (config.base_url or "https://www.zohoapis.com").rstrip("/")
         module = config.object_name or "Leads"
-        response = httpx.get(
-            f"{base_url}/crm/v2/{module}",
-            headers={"Authorization": f"Zoho-oauthtoken {config.access_token}"},
-            params=config.params or {"per_page": 100},
-            timeout=30.0,
-        )
+        params = config.params or {"per_page": 100}
+
+        def _get(token: str) -> httpx.Response:
+            return httpx.get(
+                f"{base_url}/crm/v2/{module}",
+                headers={"Authorization": f"Zoho-oauthtoken {token}"},
+                params=params,
+                timeout=30.0,
+            )
+
+        response = _get(access_token)
+        z_cid, z_sec, z_host = _zoho_client_credentials(config)
+        if response.status_code == 401 and config.refresh_token and z_cid and z_sec:
+            refreshed = refresh_zoho_token(
+                client_id=z_cid,
+                client_secret=z_sec,
+                refresh_token=config.refresh_token,
+                accounts_host=z_host,
+            )
+            response = _get(refreshed.access_token)
+
         response.raise_for_status()
         return response.json().get("data", [])
 

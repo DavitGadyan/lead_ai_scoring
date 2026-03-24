@@ -16,6 +16,12 @@ class Settings(BaseSettings):
     redis_url: str | None = None
     workspace_memory_ttl_seconds: int = 3600
 
+    # Zoho CRM OAuth (optional defaults; UI can override). Use env: ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, etc.
+    zoho_client_id: str = ""
+    zoho_client_secret: str = ""
+    zoho_accounts_host: str = "accounts.zoho.com"
+    zoho_redirect_uri: str = ""
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

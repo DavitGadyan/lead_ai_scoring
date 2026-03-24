@@ -21,6 +21,9 @@ type SourceRecord = {
     client_secret?: string | null;
     access_token?: string | null;
     refresh_token?: string | null;
+    base_url?: string | null;
+    zoho_accounts_host?: string | null;
+    oauth_scope?: string | null;
   };
 };
 
@@ -49,6 +52,7 @@ type SourceTestResult = {
   sample_count: number;
   sample_fields: string[];
   normalized_fields: string[];
+  preview_rows?: Array<Record<string, unknown>>;
 };
 
 type HubSpotPreviewRecord = {
@@ -80,6 +84,8 @@ export type HubSpotWorkspaceData = {
 
 const API_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 const HUBSPOT_OAUTH_MESSAGE = "leadscore:hubspot-oauth";
+const ZOHO_OAUTH_MESSAGE = "leadscore:zoho-oauth";
+const DEFAULT_ZOHO_SCOPE = "ZohoCRM.modules.leads.READ ZohoCRM.modules.contacts.READ";
 const HUBSPOT_SCOPE =
   "crm.objects.contacts.read crm.objects.companies.read crm.objects.owners.read";
 const HUBSPOT_OPTIONAL_SCOPE = [
@@ -139,7 +145,7 @@ function getPayload(
     return [field.key, rawValue];
   });
 
-  const config = Object.fromEntries(configEntries);
+  const config = Object.fromEntries(configEntries) as Record<string, unknown>;
 
   if (provider.key === "hubspot") {
     return {
@@ -150,6 +156,22 @@ function getPayload(
         ...config,
         access_token: formState.config.access_token || null,
         refresh_token: formState.config.refresh_token || null
+      }
+    };
+  }
+
+  if (provider.key === "zoho") {
+    const zohoRest = { ...config };
+    delete zohoRest.oauth_scope;
+    return {
+      name: formState.name,
+      source_type: formState.source_type,
+      is_active: formState.is_active,
+      config: {
+        ...zohoRest,
+        access_token: formState.config.access_token || null,
+        refresh_token: formState.config.refresh_token || null,
+        base_url: formState.config.base_url || null
       }
     };
   }
@@ -166,12 +188,18 @@ export function SourceManager({
   initialSources,
   providers,
   onSourcesChanged,
-  onHubSpotDataChanged
+  onHubSpotDataChanged,
+  workspaceSessionId,
+  onWorkspaceMemoryUpdated
 }: {
   initialSources: SourceRecord[];
   providers: ProviderDefinition[];
   onSourcesChanged?: (sources: SourceRecord[]) => void;
   onHubSpotDataChanged?: (data: HubSpotWorkspaceData) => void;
+  /** When set, successful CRM **Test connection** ingests ``preview_rows`` into workspace memory (Redis) for Talk to AI. */
+  workspaceSessionId?: string | null;
+  /** Called after connector preview is written to workspace memory (optional refresh). */
+  onWorkspaceMemoryUpdated?: (memory: unknown) => void;
 }) {
   const [sources, setSources] = useState<SourceRecord[]>(initialSources);
   const [sourceType, setSourceType] = useState<string>(providers[0]?.key ?? "hubspot");
@@ -180,6 +208,7 @@ export function SourceManager({
   );
   const [busy, setBusy] = useState<"idle" | "testing" | "saving">("idle");
   const [hubspotBusy, setHubspotBusy] = useState(false);
+  const [zohoBusy, setZohoBusy] = useState(false);
   const [hubspotContacts, setHubspotContacts] = useState<HubSpotBrowseResponse | null>(null);
   const [hubspotCompanies, setHubspotCompanies] = useState<HubSpotBrowseResponse | null>(null);
   const [hubspotBrowseBusy, setHubspotBrowseBusy] = useState<"" | "contacts" | "companies">("");
@@ -281,6 +310,91 @@ export function SourceManager({
         contacts: hubspotContacts?.records ?? [],
         companies: mappedRows
       });
+    }
+  }
+
+  function zohoApiOriginMatches(origin: string): boolean {
+    try {
+      return origin === new URL(API_URL).origin;
+    } catch {
+      return false;
+    }
+  }
+
+  async function handleZohoOAuth() {
+    if (!selectedSourceMeta || selectedSourceMeta.key !== "zoho") {
+      return;
+    }
+
+    const clientId = formState.config.client_id?.trim();
+    const clientSecret = formState.config.client_secret?.trim();
+    const apiBase = API_URL.replace(/\/$/, "");
+    const defaultRedirect = `${apiBase}/api/oauth/zoho/callback`;
+    const redirectUri = formState.config.redirect_uri?.trim() || defaultRedirect;
+    const accountsHost = formState.config.zoho_accounts_host?.trim() || "accounts.zoho.com";
+    const scope =
+      formState.config.oauth_scope?.trim() || DEFAULT_ZOHO_SCOPE;
+
+    setZohoBusy(true);
+    setMessage("");
+
+    try {
+      updateConfig("redirect_uri", redirectUri);
+      const response = await fetch(`${API_URL}/api/oauth/zoho/authorize`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          client_id: clientId,
+          client_secret: clientSecret,
+          redirect_uri: redirectUri,
+          zoho_accounts_host: accountsHost,
+          scope
+        })
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail ?? "Failed to start Zoho OAuth");
+      }
+
+      const popup = window.open(data.authorize_url, "zoho-oauth", "width=900,height=860");
+      if (!popup) {
+        throw new Error("Popup blocked. Allow popups and try again.");
+      }
+
+      const handleMessage = (event: MessageEvent) => {
+        if (!zohoApiOriginMatches(event.origin) && event.origin !== window.location.origin) {
+          return;
+        }
+        if (!event.data || event.data.type !== ZOHO_OAUTH_MESSAGE) {
+          return;
+        }
+
+        window.removeEventListener("message", handleMessage);
+
+        if (event.data.error) {
+          setMessage(`Zoho OAuth failed: ${event.data.error}`);
+          setZohoBusy(false);
+          return;
+        }
+
+        setFormState((current) => ({
+          ...current,
+          config: {
+            ...current.config,
+            access_token: event.data.access_token ?? "",
+            refresh_token: event.data.refresh_token ?? "",
+            base_url: event.data.api_domain ?? "",
+            zoho_accounts_host: event.data.zoho_accounts_host ?? current.config.zoho_accounts_host
+          }
+        }));
+        setMessage("Zoho connected. Tokens saved in the form — use Test connection, then Save source.");
+        setZohoBusy(false);
+      };
+
+      window.addEventListener("message", handleMessage);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Zoho OAuth failed");
+      setZohoBusy(false);
     }
   }
 
@@ -404,7 +518,34 @@ export function SourceManager({
           | "companies";
         applyHubSpotPreview(objectName, data as HubSpotPreviewResponse);
       }
-      setMessage("Connection test succeeded.");
+
+      const testPayload = data as SourceTestResult;
+      const isCrm = selectedSourceMeta?.category === "crm";
+      const rows = testPayload.preview_rows ?? [];
+      if (!isHubSpot && workspaceSessionId && isCrm && rows.length > 0 && selectedSourceMeta) {
+        const ingestRes = await fetch(`${API_URL}/api/workspace-memory/connector-preview`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            session_id: workspaceSessionId,
+            connector_key: selectedSourceMeta.key,
+            contacts: rows,
+            companies: [],
+            records: []
+          })
+        });
+        const mem = await ingestRes.json();
+        if (!ingestRes.ok) {
+          setMessage(
+            `Connection test succeeded, but workspace preview ingest failed: ${(mem as { detail?: string }).detail ?? ingestRes.statusText}. Talk to AI may not see this connector until ingest works.`
+          );
+        } else {
+          onWorkspaceMemoryUpdated?.(mem);
+          setMessage("Connection test succeeded. Preview rows saved for Talk to AI (workspace memory).");
+        }
+      } else {
+        setMessage("Connection test succeeded.");
+      }
     } catch (error) {
       setTestResult(null);
       setMessage(error instanceof Error ? error.message : "Connection test failed");
@@ -637,6 +778,32 @@ export function SourceManager({
               placeholder="friendly connector name"
             />
           </label>
+
+          {selectedSourceMeta?.key === "zoho" && (
+            <div className="card oauth-card">
+              <strong>Zoho CRM OAuth</strong>
+              <p className="muted">
+                Use a <strong>Server-based</strong> client in Zoho API Console. Register the redirect URI below on the
+                backend (same URL as &quot;Authorized Redirect URI&quot; in this form — typically{" "}
+                <code>{`${API_URL.replace(/\/$/, "")}/api/oauth/zoho/callback`}</code>
+                ).
+              </p>
+              <button
+                className="button"
+                type="button"
+                disabled={!hasProviders || zohoBusy}
+                onClick={handleZohoOAuth}
+              >
+                {zohoBusy ? "Authorizing..." : "Connect Zoho CRM"}
+              </button>
+              <p className="muted" style={{ marginTop: "12px" }}>
+                <strong>Zoho only (not HubSpot):</strong> after OAuth, click <strong>Test connection</strong> — that writes
+                preview rows into workspace memory so <strong>Talk to AI</strong> can use them. Then <strong>Save source</strong>{" "}
+                (needs Postgres). EU: set <strong>Zoho accounts host</strong> to <code>accounts.zoho.eu</code> when possible.
+                HubSpot&apos;s &quot;Load contacts / companies&quot; buttons only show for <strong>HubSpot</strong>.
+              </p>
+            </div>
+          )}
 
           {selectedSourceMeta?.key === "hubspot" && (
             <div className="card oauth-card">

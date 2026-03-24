@@ -14,6 +14,7 @@ from .schemas import (
     LeadScoreOut,
     LeadScoreRecord,
     PostgresSyncRequest,
+    SourceConfig,
     SourceIn,
     ProviderDefinition,
     SourceRecord,
@@ -342,8 +343,11 @@ def test_source(payload: SourceIn) -> SourceTestResult:
         last_synced_at=None,
     )
     records = ingest_from_source(source)
-    sample = records[:3]
-    sample_fields = sorted({str(key) for row in sample for key, value in row.model_dump().items() if value not in (None, "")})
+    sample = records[:25]
+    preview_rows = [row.model_dump() for row in sample]
+    sample_fields = sorted(
+        {str(key) for row in sample for key, value in row.model_dump().items() if value not in (None, "")}
+    )
 
     return SourceTestResult(
         source_type=payload.source_type,
@@ -351,6 +355,7 @@ def test_source(payload: SourceIn) -> SourceTestResult:
         sample_count=len(sample),
         sample_fields=sample_fields,
         normalized_fields=CANONICAL_FIELDS,
+        preview_rows=preview_rows,
     )
 
 
@@ -369,6 +374,7 @@ def preview_hubspot_source(payload: SourceIn) -> HubSpotPreviewResponse:
     )
     records = ingest_from_source(source)
     sample = records[:5]
+    preview_rows = [row.model_dump() for row in sample]
     sample_fields = sorted({str(key) for row in sample for key, value in row.model_dump().items() if value not in (None, "")})
 
     return HubSpotPreviewResponse(
@@ -378,6 +384,7 @@ def preview_hubspot_source(payload: SourceIn) -> HubSpotPreviewResponse:
         sample_fields=sample_fields,
         normalized_fields=CANONICAL_FIELDS,
         records=sample,
+        preview_rows=preview_rows,
     )
 
 

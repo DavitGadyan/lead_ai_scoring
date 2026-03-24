@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from importlib import import_module
 from threading import Lock
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .config import get_settings
 from .schemas import (
@@ -15,6 +15,9 @@ from .schemas import (
     WorkspaceMemoryState,
     WorkspaceMemoryUpsertRequest,
 )
+
+if TYPE_CHECKING:
+    from .schemas import WorkspaceConnectorPreviewIngestRequest
 
 _memory_lock = Lock()
 _memory_store: dict[str, tuple[datetime, WorkspaceMemoryState]] = {}
@@ -125,6 +128,24 @@ def save_workspace_memory(payload: WorkspaceMemoryUpsertRequest) -> WorkspaceMem
     with _memory_lock:
         _memory_store[payload.session_id] = (_expiry(), next_state)
     return next_state
+
+
+def ingest_connector_preview(payload: WorkspaceConnectorPreviewIngestRequest) -> WorkspaceMemoryState:
+    """Store CRM preview rows under ``connector_datasets[connector_key]`` (merged into Redis / memory)."""
+    contacts = list(payload.contacts)
+    if not contacts and payload.records:
+        contacts = [dict(row) for row in payload.records]
+    companies = list(payload.companies)
+    blob: dict[str, Any] = {"contacts": contacts, "companies": companies}
+    key = payload.connector_key.strip().lower()
+    if not key:
+        raise ValueError("connector_key is required")
+    return save_workspace_memory(
+        WorkspaceMemoryUpsertRequest(
+            session_id=payload.session_id,
+            connector_datasets={key: blob},
+        )
+    )
 
 
 def append_workspace_conversation(payload: WorkspaceChatRequest, answer: str) -> WorkspaceMemoryState:

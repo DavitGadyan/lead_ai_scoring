@@ -113,6 +113,7 @@ Supported website-managed connectors:
 - `MongoDB`
 - `Excel`
 - `CSV`
+- `Zoho CRM` (OAuth: Server-based client; see [docs/ZOHO_INTEGRATION.md](docs/ZOHO_INTEGRATION.md))
 
 From the website you can:
 

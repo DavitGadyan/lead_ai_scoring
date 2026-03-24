@@ -144,26 +144,58 @@ function buildDefaultMessages(): ConversationMessage[] {
   ];
 }
 
-function buildLocalAssistantView(sources: SourceRecord[], hubspotData: HubSpotWorkspaceData): AssistantView {
+function countRowsInDatasetBlob(blob: unknown): number {
+  if (!blob || typeof blob !== "object" || Array.isArray(blob)) {
+    return 0;
+  }
+  const o = blob as Record<string, unknown>;
+  const contacts = Array.isArray(o.contacts) ? o.contacts.length : 0;
+  const companies = Array.isArray(o.companies) ? o.companies.length : 0;
+  const records = Array.isArray(o.records) ? o.records.length : 0;
+  if (contacts || companies) {
+    return contacts + companies;
+  }
+  return records;
+}
+
+function buildLocalAssistantView(
+  sources: SourceRecord[],
+  hubspotData: HubSpotWorkspaceData,
+  connectorDatasets: ConnectorDatasets
+): AssistantView {
   const dataSources: WorkspaceDataSourceSummary[] = [];
 
-  if (hubspotData.contacts.length || hubspotData.companies.length) {
+  const merged: ConnectorDatasets = {
+    ...(connectorDatasets || {}),
+    hubspot: {
+      contacts: hubspotData.contacts,
+      companies: hubspotData.companies
+    }
+  };
+
+  const previewKeys = Object.keys(merged).filter((k) => countRowsInDatasetBlob(merged[k]) > 0);
+  previewKeys.forEach((key) => {
+    const n = countRowsInDatasetBlob(merged[key]);
     dataSources.push({
-      key: "hubspot-preview",
-      label: "Hubspot (preview)",
+      key: `${key}-preview`,
+      label: `${key} (preview in memory)`,
       status: "active",
-      record_count: hubspotData.contacts.length + hubspotData.companies.length,
-      detail: `${hubspotData.contacts.length} contacts, ${hubspotData.companies.length} companies in workspace memory under connector key hubspot`
+      record_count: n,
+      detail: `${n} rows under workspace connector key "${key}" — sent to Talk to AI when you ask about contacts/companies.`
     });
-  }
+  });
 
   sources.forEach((source, index) => {
+    const previewCount = countRowsInDatasetBlob(merged[source.source_type]);
     dataSources.push({
       key: `${source.source_type}-${index}`,
       label: source.name,
       status: source.is_active ? "connected" : "inactive",
-      record_count: 0,
-      detail: `${source.source_type} connector saved`
+      record_count: previewCount,
+      detail:
+        previewCount > 0
+          ? `${source.source_type}: ${previewCount} preview rows in workspace memory for this connector type.`
+          : `${source.source_type} connector saved (run Test connection to load preview for AI).`
     });
   });
 
@@ -173,7 +205,8 @@ function buildLocalAssistantView(sources: SourceRecord[], hubspotData: HubSpotWo
       label: "No connected data yet",
       status: "idle",
       record_count: 0,
-      detail: "Connect a CRM, load preview rows, or save a connector from the Connect Systems tab."
+      detail:
+        "Connect a CRM, then click **Test connection** to load preview rows into workspace memory (Redis) for Talk to AI."
     });
   }
 
@@ -342,15 +375,25 @@ function WorkflowCanvas({ workflow }: { workflow: WorkspaceWorkflowPlan }) {
 function OperationsCanvas({
   assistantView,
   hubspotData,
+  connectorDatasets,
   sources
 }: {
   assistantView: AssistantView;
   hubspotData: HubSpotWorkspaceData;
+  connectorDatasets: ConnectorDatasets;
   sources: SourceRecord[];
 }) {
-  const previewRecords = hubspotData.contacts.length + hubspotData.companies.length;
+  const merged: ConnectorDatasets = {
+    ...(connectorDatasets || {}),
+    hubspot: { contacts: hubspotData.contacts, companies: hubspotData.companies }
+  };
+  const previewRecords = Object.keys(merged).reduce(
+    (sum, key) => sum + countRowsInDatasetBlob(merged[key]),
+    0
+  );
   const metricCards = [
-    { label: "CRM preview rows (hubspot key)", value: previewRecords },
+    { label: "All CRM preview rows (memory)", value: previewRecords },
+    { label: "Connector keys with data", value: Object.keys(merged).filter((k) => countRowsInDatasetBlob(merged[k]) > 0).length },
     { label: "Saved connectors", value: sources.length },
     { label: "Mode", value: assistantView.mode === "automation" ? "Automation" : "QA" }
   ];
@@ -401,6 +444,7 @@ function AnalyticsAndChatTab({
   assistantView,
   sources,
   hubspotData,
+  connectorDatasets,
   messages,
   draft,
   chatBusy,
@@ -411,6 +455,7 @@ function AnalyticsAndChatTab({
   assistantView: AssistantView;
   sources: SourceRecord[];
   hubspotData: HubSpotWorkspaceData;
+  connectorDatasets: ConnectorDatasets;
   messages: ConversationMessage[];
   draft: string;
   chatBusy: boolean;
@@ -435,7 +480,12 @@ function AnalyticsAndChatTab({
 
   return (
     <div className="workspace-split ai-split">
-      <OperationsCanvas assistantView={assistantView} hubspotData={hubspotData} sources={sources} />
+      <OperationsCanvas
+        assistantView={assistantView}
+        hubspotData={hubspotData}
+        connectorDatasets={connectorDatasets}
+        sources={sources}
+      />
 
       <section className="card chat-shell">
         <div className="chat-shell__header">
@@ -589,12 +639,15 @@ export function IntelligenceWorkspace({
     contacts: [],
     companies: []
   });
+  const [connectorDatasets, setConnectorDatasets] = useState<ConnectorDatasets>({});
   const [messages, setMessages] = useState<ConversationMessage[]>(buildDefaultMessages);
   const [draft, setDraft] = useState("");
   const [chatBusy, setChatBusy] = useState(false);
   const [memorySessionId, setMemorySessionId] = useState("");
   const [memoryReady, setMemoryReady] = useState(false);
-  const [assistantView, setAssistantView] = useState<AssistantView>(() => buildLocalAssistantView(initialSources, { contacts: [], companies: [] }));
+  const [assistantView, setAssistantView] = useState<AssistantView>(() =>
+    buildLocalAssistantView(initialSources, { contacts: [], companies: [] }, {})
+  );
   const knowledgeGraphSummary =
     "The current frontend organizes lead operations across three layers: connected source systems, AI analysis, and reporting. CRM systems remain primary lead-entry points, enterprise suites enrich account context, and the scoring platform centralizes operational decisions.";
 
@@ -602,9 +655,24 @@ export function IntelligenceWorkspace({
     setAssistantView((current) =>
       current.mode === "automation" && current.workflow
         ? current
-        : buildLocalAssistantView(sources, hubspotData)
+        : buildLocalAssistantView(sources, hubspotData, connectorDatasets)
     );
-  }, [sources, hubspotData]);
+  }, [sources, hubspotData, connectorDatasets]);
+
+  function handleHubSpotWorkspaceData(data: HubSpotWorkspaceData) {
+    setHubspotData(data);
+    setConnectorDatasets((prev) => ({
+      ...prev,
+      hubspot: { contacts: data.contacts, companies: data.companies }
+    }));
+  }
+
+  function handleWorkspaceMemoryUpdated(mem: unknown) {
+    const m = mem as WorkspaceMemoryState;
+    if (m.connector_datasets && typeof m.connector_datasets === "object") {
+      setConnectorDatasets(m.connector_datasets as ConnectorDatasets);
+    }
+  }
 
   async function persistWorkspaceMemory(sessionId: string, conversation?: ConversationMessage[]) {
     const response = await fetch(`${API_URL}/api/workspace-memory`, {
@@ -616,6 +684,7 @@ export function IntelligenceWorkspace({
         sources,
         hubspot_data: hubspotData,
         connector_datasets: {
+          ...connectorDatasets,
           hubspot: {
             contacts: hubspotData.contacts,
             companies: hubspotData.companies
@@ -676,6 +745,9 @@ export function IntelligenceWorkspace({
         } else if (memory.hubspot_data) {
           setHubspotData(memory.hubspot_data);
         }
+        if (memory.connector_datasets && typeof memory.connector_datasets === "object") {
+          setConnectorDatasets(memory.connector_datasets as ConnectorDatasets);
+        }
         const hasLegacyConversation = memory.conversation.some(
           (message) =>
             message.content.includes("Start with HubSpot or Salesforce") ||
@@ -704,7 +776,16 @@ export function IntelligenceWorkspace({
     }
 
     persistWorkspaceMemory(memorySessionId).catch(() => undefined);
-  }, [activeTab, sources, hubspotData, knowledgeGraphSummary, memorySessionId, memoryReady, backendAvailable]);
+  }, [
+    activeTab,
+    sources,
+    hubspotData,
+    connectorDatasets,
+    knowledgeGraphSummary,
+    memorySessionId,
+    memoryReady,
+    backendAvailable
+  ]);
 
   async function handleChatSend() {
     if (!draft.trim() || !memorySessionId || chatBusy) {
@@ -744,6 +825,9 @@ export function IntelligenceWorkspace({
         throw new Error(("detail" in data && data.detail) || "Workspace chat failed");
       }
       setMessages(data.memory.conversation);
+      if (data.memory.connector_datasets && typeof data.memory.connector_datasets === "object") {
+        setConnectorDatasets(data.memory.connector_datasets as ConnectorDatasets);
+      }
       setAssistantView({
         mode: data.mode,
         title: data.title,
@@ -812,7 +896,9 @@ export function IntelligenceWorkspace({
             initialSources={sources}
             providers={providers}
             onSourcesChanged={setSources}
-            onHubSpotDataChanged={setHubspotData}
+            onHubSpotDataChanged={handleHubSpotWorkspaceData}
+            workspaceSessionId={memoryReady ? memorySessionId : null}
+            onWorkspaceMemoryUpdated={handleWorkspaceMemoryUpdated}
           />
         </div>
       )}
@@ -822,6 +908,7 @@ export function IntelligenceWorkspace({
           assistantView={assistantView}
           sources={sources}
           hubspotData={hubspotData}
+          connectorDatasets={connectorDatasets}
           messages={messages}
           draft={draft}
           chatBusy={chatBusy}
