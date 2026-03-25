@@ -38,6 +38,20 @@ FIELD_ALIASES = {
     "annual_revenue": {"annual_revenue", "annualrevenue", "revenue", "arr", "company_revenue", "annualincome"},
     "budget_range": {"budget_range", "budgetrange", "budget", "estimatedbudget", "spend_range"},
     "notes": {"notes", "description", "summary", "painpoints", "pain_points", "usecase", "use_case", "leadsource"},
+    "lifecycle_stage": {"lifecyclestage", "lifecycle_stage", "customerstage", "journeystage"},
+    "lead_status": {"leadstatus", "lead_status", "status", "dealstage", "pipeline_stage"},
+    "owner_name": {"owner", "owner_name", "leadowner", "accountowner", "salesrep"},
+    "last_activity_at": {"lastactivityat", "last_activity_at", "lasttouch", "lastengagementdate", "last_contacted_at"},
+    "days_since_last_activity": {"days_since_last_activity", "dayssincelastactivity", "inactivedays"},
+    "engagement_score": {"engagementscore", "engagement_score", "engagement"},
+    "health_score": {"healthscore", "health_score", "accounthealth"},
+    "product_usage_score": {"productusagescore", "product_usage_score", "usage_score"},
+    "support_ticket_count": {"supportticketcount", "support_ticket_count", "ticketcount", "open_tickets"},
+    "nps_score": {"nps", "npsscore", "nps_score"},
+    "contract_value": {"contractvalue", "contract_value", "mrr", "arrvalue", "dealvalue"},
+    "renewal_date": {"renewaldate", "renewal_date", "contractrenewaldate"},
+    "conversion_likelihood": {"conversionlikelihood", "conversion_likelihood", "win_probability"},
+    "churn_risk": {"churnrisk", "churn_risk", "attritionrisk"},
 }
 
 CANONICAL_FIELDS = [
@@ -52,6 +66,20 @@ CANONICAL_FIELDS = [
     "annual_revenue",
     "budget_range",
     "notes",
+    "lifecycle_stage",
+    "lead_status",
+    "owner_name",
+    "last_activity_at",
+    "days_since_last_activity",
+    "engagement_score",
+    "health_score",
+    "product_usage_score",
+    "support_ticket_count",
+    "nps_score",
+    "contract_value",
+    "renewal_date",
+    "conversion_likelihood",
+    "churn_risk",
 ]
 
 
@@ -71,6 +99,7 @@ def sanitize_source_record(source: SourceRecord) -> SourceRecord:
             "refresh_token": _mask_secret(source.config.refresh_token),
             "api_key": _mask_secret(source.config.api_key),
             "client_secret": _mask_secret(source.config.client_secret),
+            "mcp_env": {key: _mask_secret(value) for key, value in (source.config.mcp_env or {}).items()} or None,
         }
     )
     return source.model_copy(update={"config": sanitized_config})
@@ -90,6 +119,60 @@ def _guess_target_field(source_field: str) -> str | None:
     return None
 
 
+_STRING_CANONICAL_FIELDS = {
+    "external_id",
+    "full_name",
+    "email",
+    "company",
+    "job_title",
+    "industry",
+    "country",
+    "budget_range",
+    "notes",
+    "lifecycle_stage",
+    "lead_status",
+    "owner_name",
+    "last_activity_at",
+    "renewal_date",
+}
+
+
+def _stringify_mapping(value: dict[object, object]) -> str | None:
+    preferred_keys = ("name", "full_name", "display_name", "email", "value")
+    for key in preferred_keys:
+        candidate = value.get(key)
+        if candidate not in (None, ""):
+            return str(candidate)
+    parts = [str(candidate) for candidate in value.values() if candidate not in (None, "", [], {})]
+    return ", ".join(parts) if parts else None
+
+
+def _coerce_canonical_value(target: str, value: object) -> object | None:
+    if value is None:
+        return None
+    if isinstance(value, float) and pd.isna(value):
+        return None
+    if isinstance(value, dict):
+        if target in _STRING_CANONICAL_FIELDS:
+            return _stringify_mapping(value)
+        return None
+    if isinstance(value, list):
+        if target in _STRING_CANONICAL_FIELDS:
+            parts = []
+            for item in value:
+                if isinstance(item, dict):
+                    rendered = _stringify_mapping(item)
+                elif item not in (None, ""):
+                    rendered = str(item)
+                else:
+                    rendered = None
+                if rendered:
+                    parts.append(rendered)
+            return ", ".join(parts) if parts else None
+        return None
+    return value
+
+
 def normalize_records(records: list[dict], *, source_type: str, source_name: str) -> list[LeadCanonical]:
     leads: list[LeadCanonical] = []
     for record in records:
@@ -98,7 +181,7 @@ def normalize_records(records: list[dict], *, source_type: str, source_name: str
         for key, value in record.items():
             target = _guess_target_field(str(key))
             if target and normalized.get(target) in {None, ""}:
-                normalized[target] = None if pd.isna(value) else value
+                normalized[target] = _coerce_canonical_value(target, value)
         if not normalized.get("full_name"):
             first_name = lowered.get("firstname")
             last_name = lowered.get("lastname")
@@ -116,6 +199,37 @@ def parse_excel(content: bytes, *, source_name: str) -> list[LeadCanonical]:
     frame = pd.read_excel(BytesIO(content))
     records = frame.to_dict(orient="records")
     return normalize_records(records, source_type="excel", source_name=source_name)
+
+
+def parse_csv(content: bytes, *, source_name: str) -> list[LeadCanonical]:
+    frame = pd.read_csv(BytesIO(content))
+    records = frame.to_dict(orient="records")
+    return normalize_records(records, source_type="csv", source_name=source_name)
+
+
+def preview_uploaded_file(content: bytes, *, filename: str) -> SourceTestResult:
+    lowered = filename.lower()
+    if lowered.endswith(".csv"):
+        source_type = "csv"
+        sample = parse_csv(content, source_name=filename)[:25]
+    elif lowered.endswith(".xlsx") or lowered.endswith(".xls"):
+        source_type = "excel"
+        sample = parse_excel(content, source_name=filename)[:25]
+    else:
+        raise ValueError("Only .xlsx, .xls, and .csv files are supported")
+
+    preview_rows = [row.model_dump() for row in sample]
+    sample_fields = sorted(
+        {str(key) for row in sample for key, value in row.model_dump().items() if value not in (None, "")}
+    )
+    return SourceTestResult(
+        source_type=source_type,
+        connection_ok=True,
+        sample_count=len(sample),
+        sample_fields=sample_fields,
+        normalized_fields=CANONICAL_FIELDS,
+        preview_rows=preview_rows,
+    )
 
 
 def parse_postgres_sync(payload: PostgresSyncRequest) -> list[LeadCanonical]:
@@ -203,6 +317,7 @@ def persist_lead_and_score(lead: LeadCanonical) -> LeadScoreOut:
     return LeadScoreOut(
         lead_id=str(lead_id),
         overall_score=result.overall_score,
+        directional_score=result.directional_score,
         recommended_action=result.recommended_action,
         explanation=result.explanation,
         breakdown=result.breakdown,
@@ -342,19 +457,27 @@ def test_source(payload: SourceIn) -> SourceTestResult:
         created_at=pd.Timestamp.utcnow().to_pydatetime(),
         last_synced_at=None,
     )
-    records = ingest_from_source(source)
-    sample = records[:25]
-    preview_rows = [row.model_dump() for row in sample]
-    sample_fields = sorted(
-        {str(key) for row in sample for key, value in row.model_dump().items() if value not in (None, "")}
-    )
+    if payload.source_type == "dubai_dld_mcp":
+        raw_records = get_adapter(payload.source_type).load_records(payload.config)
+        sample = raw_records[:25]
+        preview_rows = [row for row in sample if isinstance(row, dict)]
+        sample_fields = sorted({str(key) for row in preview_rows for key, value in row.items() if value not in (None, "")})
+        normalized_fields = sorted({field for row in preview_rows for field in row.keys()})
+    else:
+        records = ingest_from_source(source)
+        sample = records[:25]
+        preview_rows = [row.model_dump() for row in sample]
+        sample_fields = sorted(
+            {str(key) for row in sample for key, value in row.model_dump().items() if value not in (None, "")}
+        )
+        normalized_fields = CANONICAL_FIELDS
 
     return SourceTestResult(
         source_type=payload.source_type,
         connection_ok=True,
         sample_count=len(sample),
         sample_fields=sample_fields,
-        normalized_fields=CANONICAL_FIELDS,
+        normalized_fields=normalized_fields,
         preview_rows=preview_rows,
     )
 

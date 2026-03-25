@@ -10,6 +10,10 @@ httpx>=0.28.0
 pytest>=8.4.0
 SQLAlchemy
 pymongo
+PyMySQL
 langchain>=0.3.0
 langchain-openai>=0.2.0
+langgraph>=0.2.0
+langsmith>=0.1.0
 redis>=5.0.0
+mcp>=1.2.0

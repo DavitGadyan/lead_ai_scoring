@@ -1,5 +1,4 @@
 import "./globals.css";
-import Link from "next/link";
 import type { ReactNode } from "react";
 import { Inter, Manrope } from "next/font/google";
 
@@ -36,12 +35,6 @@ export default function RootLayout({ children }: { children: ReactNode }) {
                   <div className="nav-brand__title">LeadScore AI</div>
                   <div className="nav-brand__subtitle">Intelligence Workspace</div>
                 </div>
-              </div>
-              <div className="nav">
-                <Link href="/">Overview</Link>
-                <Link href="/admin">Admin</Link>
-                <Link href="/sources">Sources</Link>
-                <Link href="/leads">Recent Leads</Link>
               </div>
               <ThemeToggle />
             </nav>

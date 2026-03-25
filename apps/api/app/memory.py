@@ -107,6 +107,9 @@ def save_workspace_memory(payload: WorkspaceMemoryUpsertRequest) -> WorkspaceMem
             "knowledge_graph_summary": payload.knowledge_graph_summary
             if payload.knowledge_graph_summary is not None
             else current.knowledge_graph_summary,
+            "lead_intelligence": payload.lead_intelligence
+            if payload.lead_intelligence is not None
+            else current.lead_intelligence,
             "conversation": payload.conversation if payload.conversation is not None else current.conversation,
             "updated_at": _utcnow(),
         }

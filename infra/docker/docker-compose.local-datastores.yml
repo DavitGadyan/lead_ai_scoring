@@ -1,0 +1,98 @@
+version: "3.9"
+
+services:
+  app_postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${LEADSCORE_APP_DB:-leadscore}
+      POSTGRES_USER: ${LEADSCORE_APP_DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${LEADSCORE_APP_DB_PASSWORD:-postgres}
+    ports:
+      - "127.0.0.1:${LEADSCORE_APP_DB_PORT:-5432}:5432"
+    volumes:
+      - app_postgres_data:/var/lib/postgresql/data
+      - ../../sql/schema.sql:/docker-entrypoint-initdb.d/001-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${LEADSCORE_APP_DB_USER:-postgres} -d ${LEADSCORE_APP_DB:-leadscore}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  postgres_local:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: leadscore_local
+      POSTGRES_USER: local
+      POSTGRES_PASSWORD: local
+    ports:
+      - "127.0.0.1:${POSTGRES_LOCAL_PORT:-5434}:5432"
+    volumes:
+      - postgres_local_data:/var/lib/postgresql/data
+      - ./postgres-local-init.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U local -d leadscore_local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  supabase_local:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "127.0.0.1:${SUPABASE_LOCAL_PORT:-5435}:5432"
+    volumes:
+      - supabase_local_data:/var/lib/postgresql/data
+      - ./supabase-local-init.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  mysql_local:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: leadscore_local
+      MYSQL_USER: local
+      MYSQL_PASSWORD: local
+      MYSQL_ROOT_PASSWORD: root
+    ports:
+      - "127.0.0.1:${MYSQL_LOCAL_PORT:-3307}:3306"
+    volumes:
+      - mysql_local_data:/var/lib/mysql
+      - ./mysql-local-init.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p${MYSQL_ROOT_PASSWORD:-root} --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+
+  mongo_local:
+    image: mongo:7
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_DATABASE: leadscore_local
+    ports:
+      - "127.0.0.1:${MONGO_LOCAL_PORT:-27018}:27017"
+    volumes:
+      - mongo_local_data:/data/db
+      - ./mongo-local-init.js:/docker-entrypoint-initdb.d/001-init.js:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --eval 'db.adminCommand({ ping: 1 }).ok' | grep 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+
+volumes:
+  app_postgres_data:
+  postgres_local_data:
+  supabase_local_data:
+  mysql_local_data:
+  mongo_local_data:

@@ -5,14 +5,14 @@ from app.scoring import score_lead
 def test_score_lead_returns_expected_action() -> None:
     lead = LeadCanonical(
         full_name="Jane Doe",
-        email="jane@example.com",
+        email="jane@leadscore.ai",
         company="Acme Health",
         job_title="VP Operations",
         industry="Healthcare",
         country="United States",
         employee_count=300,
         budget_range="25k-50k",
-        notes="Need automation in 60 days and want a demo with pricing.",
+        notes="Need automation in 60 days and want pricing plus an implementation review.",
     )
 
     result = score_lead(lead)

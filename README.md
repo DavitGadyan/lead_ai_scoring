@@ -36,7 +36,7 @@ Best for:
 - MVPs
 - lower traffic
 - quick automations
-- portfolio demos
+- pilot rollouts
 
 ### Backend Type 2: Python + FastAPI + LangChain
 
@@ -76,19 +76,14 @@ workflows/
 
 The backend now uses `apps/api/.env`.
 
-Created files:
-
-- `apps/api/.env`
-- `apps/api/.env.example`
-
-Example values:
+Base values:
 
 ```env
 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/leadscore
 APP_NAME=LeadScore AI API
 ENVIRONMENT=development
 DEFAULT_SCORING_PROFILE=default_b2b
-INTERNAL_ALERT_EMAIL=sales@example.com
+INTERNAL_ALERT_EMAIL=sales@leadscore.ai
 OPENAI_API_KEY=replace-with-your-openai-key
 OPENAI_MODEL=gpt-4o-mini
 OPENAI_BASE_URL=
@@ -100,6 +95,7 @@ Notes:
 - set `OPENAI_API_KEY` to your real OpenAI key
 - keep `OPENAI_BASE_URL` empty unless you use an OpenAI-compatible endpoint
 - if `LLM_ENABLED=false` or the key is missing, the backend falls back to deterministic non-LLM explanations
+- for a VM-friendly local connector stack, run `docker compose -f infra/docker/docker-compose.local-datastores.yml up -d` and use the matching connector URLs from your local environment
 
 ## Website Connection Management
 
@@ -113,7 +109,7 @@ Supported website-managed connectors:
 - `MongoDB`
 - `Excel`
 - `CSV`
-- `Zoho CRM` (OAuth: Server-based client; see [docs/ZOHO_INTEGRATION.md](docs/ZOHO_INTEGRATION.md))
+- `Zoho CRM` (OAuth: Server-based client)
 
 From the website you can:
 
@@ -133,7 +129,7 @@ From the website you can:
 
 `POST /api/sources`
 
-Example SQL source:
+SQL source request body:
 
 ```json
 {
@@ -147,7 +143,7 @@ Example SQL source:
 }
 ```
 
-Example Supabase source:
+Supabase source request body:
 
 ```json
 {
@@ -161,7 +157,7 @@ Example Supabase source:
 }
 ```
 
-Example MongoDB source:
+MongoDB source request body:
 
 ```json
 {
@@ -179,7 +175,7 @@ Example MongoDB source:
 }
 ```
 
-Example Excel source:
+Excel source request body:
 
 ```json
 {
@@ -251,7 +247,7 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 ```bash
 cd apps/web
-cp .env.local.example .env.local
+touch .env.local
 npm install
 npm run dev
 ```
@@ -340,7 +336,7 @@ The API deployment is already wired to read:
 
 Terraform files live in `infra/terraform`.
 
-Example:
+Terraform run:
 
 ```bash
 cd infra/terraform

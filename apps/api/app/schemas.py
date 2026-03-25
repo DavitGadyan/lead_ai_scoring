@@ -16,6 +16,20 @@ class LeadCanonical(BaseModel):
     annual_revenue: float | None = Field(default=None, ge=0)
     budget_range: str | None = None
     notes: str | None = None
+    lifecycle_stage: str | None = None
+    lead_status: str | None = None
+    owner_name: str | None = None
+    last_activity_at: str | None = None
+    days_since_last_activity: int | None = Field(default=None, ge=0)
+    engagement_score: float | None = None
+    health_score: float | None = None
+    product_usage_score: float | None = None
+    support_ticket_count: int | None = Field(default=None, ge=0)
+    nps_score: float | None = None
+    contract_value: float | None = None
+    renewal_date: str | None = None
+    conversion_likelihood: float | None = None
+    churn_risk: float | None = None
     source_type: str = "manual"
     source_name: str = "api"
 
@@ -53,6 +67,13 @@ class SourceConfig(BaseModel):
     subdomain: str | None = None
     object_name: str | None = None
     params: dict[str, Any] | None = None
+    monday_board_ids: str | None = None
+    """monday.com board IDs (comma-separated). Used when ``query`` is empty to fetch items for scoring / Talk to AI."""
+    mcp_command: str | None = None
+    mcp_args: list[str] | None = None
+    mcp_env: dict[str, str] | None = None
+    mcp_tool_name: str | None = None
+    mcp_profile: str | None = None
 
 
 class SourceIn(BaseModel):
@@ -200,6 +221,7 @@ class WorkspaceMemoryState(BaseModel):
     """Per-connector payloads (native shapes), e.g. hubspot: {contacts, companies}, salesforce: {...}."""
 
     knowledge_graph_summary: str | None = None
+    lead_intelligence: dict[str, Any] | None = None
     conversation: list[WorkspaceConversationMessage] = Field(default_factory=list)
     updated_at: datetime | None = None
 
@@ -242,6 +264,7 @@ class WorkspaceMemoryUpsertRequest(BaseModel):
     hubspot_data: WorkspaceHubSpotData | None = None
     connector_datasets: dict[str, Any] | None = None
     knowledge_graph_summary: str | None = None
+    lead_intelligence: dict[str, Any] | None = None
     conversation: list[WorkspaceConversationMessage] | None = None
 
 
@@ -264,6 +287,12 @@ class WorkspaceConnectorPreviewIngestRequest(BaseModel):
 class WorkspaceChatRequest(BaseModel):
     session_id: str
     message: str
+
+
+class ChatQueryRequest(BaseModel):
+    session_id: str
+    message: str
+    connector_scope: list[str] = Field(default_factory=list)
 
 
 class WorkspaceDataSourceSummary(BaseModel):
@@ -302,6 +331,172 @@ class WorkspaceScopeRecommendation(BaseModel):
     reason: str
 
 
+class CanonicalSourceRef(BaseModel):
+    connector: str
+    source_id: str
+    source_name: str
+    last_synced_at: datetime | None = None
+
+
+class CanonicalContact(BaseModel):
+    id: str
+    full_name: str | None = None
+    email: str | None = None
+    title: str | None = None
+    company_name: str | None = None
+    source: CanonicalSourceRef
+    last_updated_at: datetime | None = None
+
+
+class CanonicalCompany(BaseModel):
+    id: str
+    name: str | None = None
+    domain: str | None = None
+    industry: str | None = None
+    employee_count: int | None = None
+    source: CanonicalSourceRef
+    last_updated_at: datetime | None = None
+
+
+class CanonicalLead(BaseModel):
+    id: str
+    status: str | None = None
+    score: float | None = None
+    full_name: str | None = None
+    email: str | None = None
+    company_name: str | None = None
+    source: CanonicalSourceRef
+    last_updated_at: datetime | None = None
+
+
+class CanonicalRecord(BaseModel):
+    id: str
+    entity_type: str
+    title: str
+    subtitle: str | None = None
+    summary: str | None = None
+    source: CanonicalSourceRef
+    data: dict[str, Any] = Field(default_factory=dict)
+
+
+class QueryPlan(BaseModel):
+    intent: str
+    operation: str
+    entities: list[str] = Field(default_factory=list)
+    sources: list[str] = Field(default_factory=list)
+    filters: dict[str, Any] = Field(default_factory=dict)
+    fields: list[str] = Field(default_factory=list)
+    limit: int = 10
+    needs_semantic_search: bool = False
+    follow_up_required: bool = False
+    reasoning: str | None = None
+
+
+class QueryCitation(BaseModel):
+    source: str
+    source_name: str
+    source_id: str
+    entity_type: str
+    record_id: str
+    title: str
+
+
+class QueryExecutionTrace(BaseModel):
+    cache_hit: bool = False
+    executed_query: str
+    result_count: int = 0
+    validated_operation: str
+    validated_sources: list[str] = Field(default_factory=list)
+
+
+class AgentRunSummary(BaseModel):
+    agent: str
+    purpose: str
+    framework: str = "langgraph"
+    status: str = "completed"
+    latency_ms: int = 0
+    model_name: str | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    trace_project: str | None = None
+
+
+class TokenUsageSummary(BaseModel):
+    estimated_prompt_tokens: int = 0
+    actual_prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    by_agent: dict[str, int] = Field(default_factory=dict)
+    source: str = "estimate"
+
+
+class LeadConversionSignal(BaseModel):
+    record_id: str
+    connector: str
+    title: str
+    score: float
+    reasons: list[str] = Field(default_factory=list)
+
+
+class LeadChurnSignal(BaseModel):
+    record_id: str
+    connector: str
+    title: str
+    score: float
+    reasons: list[str] = Field(default_factory=list)
+
+
+class LeadRiskSummary(BaseModel):
+    label: str
+    connector_breakdown: dict[str, int] = Field(default_factory=dict)
+    top_reasons: list[str] = Field(default_factory=list)
+    total_records: int = 0
+
+
+class GraphNodePayload(BaseModel):
+    id: str
+    label: str
+    kind: str
+    x: int = 0
+    y: int = 0
+    connector: str | None = None
+    view: str = "all"
+    detail: str | None = None
+    score: float | None = None
+
+
+class GraphEdgePayload(BaseModel):
+    id: str
+    source: str
+    target: str
+    label: str | None = None
+    view: str = "all"
+    strength: float | None = None
+
+
+class PlotlyTraceSpec(BaseModel):
+    type: str = "bar"
+    name: str | None = None
+    x: list[Any] = Field(default_factory=list)
+    y: list[Any] = Field(default_factory=list)
+    labels: list[str] | None = None
+    values: list[float] | None = None
+    text: list[str] | None = None
+    mode: str | None = None
+    marker: dict[str, Any] = Field(default_factory=dict)
+
+
+class PlotlyChartSpec(BaseModel):
+    id: str
+    title: str
+    chart_type: str
+    description: str | None = None
+    data: list[PlotlyTraceSpec] = Field(default_factory=list)
+    layout: dict[str, Any] = Field(default_factory=dict)
+    config: dict[str, Any] = Field(default_factory=dict)
+
+
 class WorkspaceChatResponse(BaseModel):
     session_id: str
     answer: str
@@ -315,6 +510,25 @@ class WorkspaceChatResponse(BaseModel):
     suggested_actions: list[str] = Field(default_factory=list)
 
 
+class ChatQueryResponse(WorkspaceChatResponse):
+    used_sources: list[str] = Field(default_factory=list)
+    query_plan: QueryPlan | None = None
+    execution: QueryExecutionTrace | None = None
+    records: list[CanonicalRecord] = Field(default_factory=list)
+    citations: list[QueryCitation] = Field(default_factory=list)
+    confidence: float = 0.0
+    agent_runs: list[AgentRunSummary] = Field(default_factory=list)
+    token_usage: TokenUsageSummary | None = None
+    graph_reasoning_summary: str | None = None
+    graph_nodes: list[GraphNodePayload] = Field(default_factory=list)
+    graph_edges: list[GraphEdgePayload] = Field(default_factory=list)
+    plotly_charts: list[PlotlyChartSpec] = Field(default_factory=list)
+    conversion_summary: LeadRiskSummary | None = None
+    churn_summary: LeadRiskSummary | None = None
+    conversion_signals: list[LeadConversionSignal] = Field(default_factory=list)
+    churn_signals: list[LeadChurnSignal] = Field(default_factory=list)
+
+
 class ScoreBreakdown(BaseModel):
     fit_score: int = Field(ge=0, le=100)
     intent_score: int = Field(ge=0, le=100)
@@ -326,6 +540,7 @@ class ScoreBreakdown(BaseModel):
 class LeadScoreOut(BaseModel):
     lead_id: str
     overall_score: float
+    directional_score: float | None = Field(default=None, ge=-1, le=1)
     recommended_action: str
     explanation: str
     breakdown: ScoreBreakdown

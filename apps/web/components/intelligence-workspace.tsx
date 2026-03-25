@@ -1,6 +1,10 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { PlotParams } from "react-plotly.js";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   Background,
   Controls,
@@ -20,6 +24,8 @@ import {
 import "@xyflow/react/dist/style.css";
 
 import { SourceManager, type HubSpotWorkspaceData } from "./source-manager";
+
+const Plot = dynamic<PlotParams>(() => import("react-plotly.js"), { ssr: false });
 
 type SourceRecord = {
   id: string;
@@ -65,6 +71,27 @@ type WorkspaceMemoryState = {
   hubspot_data: HubSpotWorkspaceData;
   connector_datasets?: ConnectorDatasets;
   knowledge_graph_summary: string | null;
+  lead_intelligence?: {
+    mode?: "qa" | "automation";
+    title?: string | null;
+    summary?: string | null;
+    used_sources?: string[];
+    query_plan?: QueryPlan | null;
+    execution?: QueryExecutionTrace | null;
+    records?: CanonicalRecord[];
+    confidence?: number;
+    agent_runs?: AgentRunSummary[];
+    token_usage?: TokenUsageSummary | null;
+    graph_reasoning_summary?: string | null;
+    graph_nodes?: GraphNodePayload[];
+    graph_edges?: GraphEdgePayload[];
+    plotly_charts?: PlotlyChartSpec[];
+    conversion_summary?: LeadRiskSummary | null;
+    churn_summary?: LeadRiskSummary | null;
+    conversion_signals?: LeadSignal[];
+    churn_signals?: LeadSignal[];
+    citations?: QueryCitation[];
+  } | null;
   conversation: ConversationMessage[];
   updated_at: string | null;
 };
@@ -101,6 +128,8 @@ type WorkspaceWorkflowPlan = {
 type WorkflowNodeData = {
   label: string;
   kind: string;
+  detail?: string | null;
+  score?: number | null;
 };
 
 type WorkspaceScopeRecommendation = {
@@ -110,7 +139,132 @@ type WorkspaceScopeRecommendation = {
   reason: string;
 };
 
-type WorkspaceChatResponse = {
+type QueryPlan = {
+  intent: string;
+  operation: string;
+  entities: string[];
+  sources: string[];
+  filters: Record<string, unknown>;
+  fields: string[];
+  limit: number;
+  needs_semantic_search: boolean;
+  follow_up_required: boolean;
+  reasoning?: string | null;
+};
+
+type QueryExecutionTrace = {
+  cache_hit: boolean;
+  executed_query: string;
+  result_count: number;
+  validated_operation: string;
+  validated_sources: string[];
+};
+
+type AgentRunSummary = {
+  agent: string;
+  purpose: string;
+  framework: string;
+  status: string;
+  latency_ms: number;
+  model_name?: string | null;
+  prompt_tokens?: number | null;
+  completion_tokens?: number | null;
+  total_tokens?: number | null;
+  trace_project?: string | null;
+};
+
+type TokenUsageSummary = {
+  estimated_prompt_tokens: number;
+  actual_prompt_tokens?: number | null;
+  completion_tokens?: number | null;
+  total_tokens?: number | null;
+  by_agent: Record<string, number>;
+  source: string;
+};
+
+type LeadRiskSummary = {
+  label: string;
+  connector_breakdown: Record<string, number>;
+  top_reasons: string[];
+  total_records: number;
+};
+
+type LeadSignal = {
+  record_id: string;
+  connector: string;
+  title: string;
+  score: number;
+  reasons: string[];
+};
+
+type GraphNodePayload = {
+  id: string;
+  label: string;
+  kind: string;
+  x: number;
+  y: number;
+  connector?: string | null;
+  view: string;
+  detail?: string | null;
+  score?: number | null;
+};
+
+type GraphEdgePayload = {
+  id: string;
+  source: string;
+  target: string;
+  label?: string | null;
+  view: string;
+  strength?: number | null;
+};
+
+type PlotlyTraceSpec = {
+  type: string;
+  name?: string | null;
+  x?: unknown[];
+  y?: unknown[];
+  labels?: string[] | null;
+  values?: number[] | null;
+  text?: string[] | null;
+  mode?: string | null;
+  marker?: Record<string, unknown>;
+};
+
+type PlotlyChartSpec = {
+  id: string;
+  title: string;
+  chart_type: string;
+  description?: string | null;
+  data: PlotlyTraceSpec[];
+  layout: Record<string, unknown>;
+  config: Record<string, unknown>;
+};
+
+type CanonicalRecord = {
+  id: string;
+  entity_type: string;
+  title: string;
+  subtitle: string | null;
+  summary: string | null;
+  source: {
+    connector: string;
+    source_id: string;
+    source_name: string;
+    last_synced_at: string | null;
+  };
+  data: Record<string, unknown>;
+};
+
+type QueryCitation = {
+  source: string;
+  source_name: string;
+  source_id: string;
+  entity_type: string;
+  record_id: string;
+  title: string;
+};
+
+type ChatQueryResponse = {
   session_id: string;
   answer: string;
   memory: WorkspaceMemoryState;
@@ -121,13 +275,29 @@ type WorkspaceChatResponse = {
   workflow: WorkspaceWorkflowPlan | null;
   recommended_scopes: WorkspaceScopeRecommendation[];
   suggested_actions: string[];
+  used_sources: string[];
+  query_plan: QueryPlan | null;
+  execution: QueryExecutionTrace | null;
+  records: CanonicalRecord[];
+  citations: QueryCitation[];
+  confidence: number;
+  agent_runs: AgentRunSummary[];
+  token_usage: TokenUsageSummary | null;
+  graph_reasoning_summary: string | null;
+  graph_nodes: GraphNodePayload[];
+  graph_edges: GraphEdgePayload[];
+  plotly_charts: PlotlyChartSpec[];
+  conversion_summary: LeadRiskSummary | null;
+  churn_summary: LeadRiskSummary | null;
+  conversion_signals: LeadSignal[];
+  churn_signals: LeadSignal[];
 };
 
-type AssistantView = Omit<WorkspaceChatResponse, "session_id" | "answer" | "memory">;
+type AssistantView = Omit<ChatQueryResponse, "session_id" | "answer" | "memory">;
 
 const TAB_OPTIONS = [
   { id: "connect", label: "Connect Systems" },
-  { id: "ai", label: "Talk to AI" },
+  { id: "ai", label: "AI Assistant" },
   { id: "graph", label: "Knowledge Graph" }
 ] as const;
 
@@ -158,12 +328,24 @@ function countRowsInDatasetBlob(blob: unknown): number {
   return records;
 }
 
+function defaultTokenUsage(): TokenUsageSummary {
+  return {
+    estimated_prompt_tokens: 0,
+    actual_prompt_tokens: null,
+    completion_tokens: null,
+    total_tokens: null,
+    by_agent: {},
+    source: "estimate"
+  };
+}
+
 function buildLocalAssistantView(
   sources: SourceRecord[],
   hubspotData: HubSpotWorkspaceData,
   connectorDatasets: ConnectorDatasets
 ): AssistantView {
   const dataSources: WorkspaceDataSourceSummary[] = [];
+  const mcpKeys = new Set(["dubai_dld_mcp"]);
 
   const merged: ConnectorDatasets = {
     ...(connectorDatasets || {}),
@@ -185,19 +367,20 @@ function buildLocalAssistantView(
     });
   });
 
-  sources.forEach((source, index) => {
-    const previewCount = countRowsInDatasetBlob(merged[source.source_type]);
-    dataSources.push({
-      key: `${source.source_type}-${index}`,
-      label: source.name,
-      status: source.is_active ? "connected" : "inactive",
-      record_count: previewCount,
-      detail:
-        previewCount > 0
-          ? `${source.source_type}: ${previewCount} preview rows in workspace memory for this connector type.`
-          : `${source.source_type} connector saved (run Test connection to load preview for AI).`
+  sources
+    .filter((source) => source.is_active && mcpKeys.has(source.source_type))
+    .forEach((source) => {
+      if (dataSources.some((item) => item.key === `${source.source_type}-preview` || item.key === source.id)) {
+        return;
+      }
+      dataSources.push({
+        key: source.id,
+        label: `${source.source_type} (direct MCP)`,
+        status: "active",
+        record_count: 1,
+        detail: "Direct MCP/API connector available for live query execution in AI Assistant."
+      });
     });
-  });
 
   if (dataSources.length === 0) {
     dataSources.push({
@@ -212,13 +395,132 @@ function buildLocalAssistantView(
 
   return {
     mode: "qa",
-    title: "Connected data workspace",
-    summary: "Summarizes saved connectors and per-connector preview datasets the assistant can use.",
+    title: "Connected connectors",
+    summary: null,
     data_sources: dataSources,
     workflow: null,
     recommended_scopes: [],
-    suggested_actions: []
+    suggested_actions: [],
+    used_sources: [],
+    query_plan: null,
+    execution: null,
+    records: [],
+    citations: [],
+    confidence: 0,
+    agent_runs: [],
+    token_usage: defaultTokenUsage(),
+    graph_reasoning_summary: null,
+    graph_nodes: [],
+    graph_edges: [],
+    plotly_charts: [],
+    conversion_summary: null,
+    churn_summary: null,
+    conversion_signals: [],
+    churn_signals: []
   };
+}
+
+function hydrateAssistantViewFromMemory(
+  memory: WorkspaceMemoryState,
+  sources: SourceRecord[],
+  hubspotData: HubSpotWorkspaceData,
+  connectorDatasets: ConnectorDatasets
+): AssistantView {
+  const base = buildLocalAssistantView(sources, hubspotData, connectorDatasets);
+  const intelligence = memory.lead_intelligence;
+  return {
+    ...base,
+    mode: intelligence?.mode ?? base.mode,
+    title: intelligence?.title ?? base.title,
+    summary: intelligence?.summary ?? base.summary,
+    used_sources: intelligence?.used_sources ?? base.used_sources,
+    query_plan: intelligence?.query_plan ?? base.query_plan,
+    execution: intelligence?.execution ?? base.execution,
+    records: intelligence?.records ?? base.records,
+    confidence: intelligence?.confidence ?? base.confidence,
+    citations: intelligence?.citations ?? base.citations,
+    agent_runs: intelligence?.agent_runs ?? base.agent_runs,
+    token_usage: intelligence?.token_usage ?? base.token_usage,
+    graph_reasoning_summary: intelligence?.graph_reasoning_summary ?? memory.knowledge_graph_summary ?? base.graph_reasoning_summary,
+    graph_nodes: intelligence?.graph_nodes ?? base.graph_nodes,
+    graph_edges: intelligence?.graph_edges ?? base.graph_edges,
+    plotly_charts: intelligence?.plotly_charts ?? base.plotly_charts,
+    conversion_summary: intelligence?.conversion_summary ?? base.conversion_summary,
+    churn_summary: intelligence?.churn_summary ?? base.churn_summary,
+    conversion_signals: intelligence?.conversion_signals ?? base.conversion_signals,
+    churn_signals: intelligence?.churn_signals ?? base.churn_signals
+  };
+}
+
+function reasonLabel(reason: string): string {
+  return reason
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function signalExplanation(signal: LeadSignal, type: "conversion" | "churn"): string {
+  const reasons = signal.reasons.map(reasonLabel);
+  if (reasons.length === 0) {
+    return type === "conversion" ? "Positive conversion indicators detected." : "Possible churn indicators detected.";
+  }
+  return type === "conversion"
+    ? `Likely to convert because of ${reasons.join(", ")}.`
+    : `Possible churn risk because of ${reasons.join(", ")}.`;
+}
+
+function LeadSignalsSection({
+  title,
+  summary,
+  signals,
+  type
+}: {
+  title: string;
+  summary: LeadRiskSummary | null;
+  signals: LeadSignal[];
+  type: "conversion" | "churn";
+}) {
+  if (!summary) {
+    return null;
+  }
+
+  return (
+    <details className="ai-list-card">
+      <summary style={{ cursor: "pointer", listStyle: "none" }}>
+        <div className="ai-list-card__top">
+          <strong>{title}</strong>
+          <span className="ai-status ai-status--active">{summary.total_records}</span>
+        </div>
+        <p className="muted">Top reasons: {summary.top_reasons.join(", ") || "none"}</p>
+      </summary>
+      <div style={{ marginTop: 12, overflowX: "auto" }}>
+        <table className="table">
+          <thead>
+            <tr>
+              <th>Lead</th>
+              <th>Source</th>
+              <th>Summary</th>
+            </tr>
+          </thead>
+          <tbody>
+            {signals.length === 0 ? (
+              <tr>
+                <td colSpan={3}>No detailed signals available.</td>
+              </tr>
+            ) : (
+              signals.map((signal) => (
+                <tr key={signal.record_id}>
+                  <td>{signal.title}</td>
+                  <td>{signal.connector}</td>
+                  <td>{signalExplanation(signal, type)}</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </details>
+  );
 }
 
 function exportReportAsPdf(summary: string) {
@@ -263,7 +565,13 @@ function getWorkflowNodeStyle(kind: string) {
     data: { background: "rgba(134, 239, 172, 0.18)", border: "#16a34a" },
     agent: { background: "rgba(196, 181, 253, 0.22)", border: "#7c3aed" },
     action: { background: "rgba(252, 211, 77, 0.22)", border: "#ca8a04" },
-    report: { background: "rgba(249, 168, 212, 0.20)", border: "#db2777" }
+    report: { background: "rgba(249, 168, 212, 0.20)", border: "#db2777" },
+    connector: { background: "rgba(125, 211, 252, 0.20)", border: "#0284c7" },
+    contact: { background: "rgba(196, 181, 253, 0.22)", border: "#7c3aed" },
+    company: { background: "rgba(134, 239, 172, 0.18)", border: "#16a34a" },
+    lead: { background: "rgba(251, 191, 36, 0.20)", border: "#d97706" },
+    outcome: { background: "rgba(244, 114, 182, 0.18)", border: "#db2777" },
+    reason: { background: "rgba(203, 213, 225, 0.24)", border: "#64748b" }
   };
   return styles[kind] ?? { background: "rgba(148, 163, 184, 0.18)", border: "#64748b" };
 }
@@ -280,6 +588,8 @@ function WorkflowNodeCard({ data, selected }: NodeProps<Node<WorkflowNodeData>>)
           {data.kind}
         </div>
         <div className="workflow-node-title">{data.label}</div>
+        {data.detail && <div className="muted" style={{ fontSize: 12 }}>{data.detail}</div>}
+        {typeof data.score === "number" && <div className="muted" style={{ fontSize: 12 }}>score {data.score}</div>}
       </div>
       <Handle type="source" position={Position.Right} className="workflow-handle" />
     </>
@@ -298,7 +608,7 @@ function WorkflowCanvasInner({ workflow }: { workflow: WorkspaceWorkflowPlan }) 
         position: { x: node.x, y: node.y },
         type: "workflowNode",
         draggable: true,
-        data: { label: node.label, kind: node.kind },
+        data: { label: node.label, kind: node.kind, detail: null, score: null },
         style: {
           width: 180,
           borderRadius: 18,
@@ -372,50 +682,28 @@ function WorkflowCanvas({ workflow }: { workflow: WorkspaceWorkflowPlan }) {
   );
 }
 
-function OperationsCanvas({
-  assistantView,
-  hubspotData,
-  connectorDatasets,
-  sources
-}: {
-  assistantView: AssistantView;
-  hubspotData: HubSpotWorkspaceData;
-  connectorDatasets: ConnectorDatasets;
-  sources: SourceRecord[];
-}) {
-  const merged: ConnectorDatasets = {
-    ...(connectorDatasets || {}),
-    hubspot: { contacts: hubspotData.contacts, companies: hubspotData.companies }
-  };
-  const previewRecords = Object.keys(merged).reduce(
-    (sum, key) => sum + countRowsInDatasetBlob(merged[key]),
-    0
-  );
-  const metricCards = [
-    { label: "All CRM preview rows (memory)", value: previewRecords },
-    { label: "Connector keys with data", value: Object.keys(merged).filter((k) => countRowsInDatasetBlob(merged[k]) > 0).length },
-    { label: "Saved connectors", value: sources.length },
-    { label: "Mode", value: assistantView.mode === "automation" ? "Automation" : "QA" }
-  ];
-
+function OperationsCanvas({ assistantView }: { assistantView: AssistantView }) {
   return (
     <section className="card ai-workspace-card">
-      <div className="ai-workspace-header">
-        <div>
-          <div className="ai-mode-pill">{assistantView.mode === "automation" ? "Automation Planner" : "Data QA"}</div>
-          <h2>{assistantView.title}</h2>
-          {assistantView.summary && <p className="muted">{assistantView.summary}</p>}
-        </div>
-      </div>
-
-      <div className="ai-metric-grid">
-        {metricCards.map((metric) => (
-          <div key={metric.label} className="ai-metric-card">
-            <span className="muted">{metric.label}</span>
-            <strong>{metric.value}</strong>
+      {(assistantView.conversion_summary || assistantView.churn_summary) && (
+        <div className="ai-section">
+          <h3>Lead Intelligence</h3>
+          <div className="ai-list-grid">
+            <LeadSignalsSection
+              title="Likely conversion signals"
+              summary={assistantView.conversion_summary}
+              signals={assistantView.conversion_signals}
+              type="conversion"
+            />
+            <LeadSignalsSection
+              title="Likely churn signals"
+              summary={assistantView.churn_summary}
+              signals={assistantView.churn_signals}
+              type="churn"
+            />
           </div>
-        ))}
-      </div>
+        </div>
+      )}
 
       {assistantView.mode === "automation" && assistantView.workflow ? (
         <WorkflowCanvas workflow={assistantView.workflow} />
@@ -442,7 +730,6 @@ function OperationsCanvas({
 
 function AnalyticsAndChatTab({
   assistantView,
-  sources,
   hubspotData,
   connectorDatasets,
   messages,
@@ -453,7 +740,6 @@ function AnalyticsAndChatTab({
   onSend
 }: {
   assistantView: AssistantView;
-  sources: SourceRecord[];
   hubspotData: HubSpotWorkspaceData;
   connectorDatasets: ConnectorDatasets;
   messages: ConversationMessage[];
@@ -480,18 +766,13 @@ function AnalyticsAndChatTab({
 
   return (
     <div className="workspace-split ai-split">
-      <OperationsCanvas
-        assistantView={assistantView}
-        hubspotData={hubspotData}
-        connectorDatasets={connectorDatasets}
-        sources={sources}
-      />
+      <OperationsCanvas assistantView={assistantView} />
 
       <section className="card chat-shell">
         <div className="chat-shell__header">
           <div>
-            <div className="ai-mode-pill">AI Copilot</div>
-            <h2>CRM data, QA, and automation</h2>
+            <div className="ai-mode-pill">AI Assistant</div>
+            <h2>Lead scoring and churn analysis</h2>
           </div>
           {!memoryReady && <span className="muted">Loading session...</span>}
         </div>
@@ -508,7 +789,13 @@ function AnalyticsAndChatTab({
           {messages.map((message, index) => (
             <div key={`${message.role}-${index}`} className={`chat-bubble ${message.role}`}>
               <strong>{message.role === "assistant" ? "AI" : "You"}</strong>
-              <p>{message.content}</p>
+              {message.role === "assistant" ? (
+                <div className="markdown-content">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+                </div>
+              ) : (
+                <p>{message.content}</p>
+              )}
             </div>
           ))}
         </div>
@@ -537,90 +824,196 @@ function AnalyticsAndChatTab({
   );
 }
 
-function KnowledgeGraphTab({
-  providers,
-  connectedCount,
-  summary
+function KnowledgeGraphCanvas({
+  nodes,
+  edges
 }: {
-  providers: ProviderDefinition[];
-  connectedCount: number;
-  summary: string;
+  nodes: GraphNodePayload[];
+  edges: GraphEdgePayload[];
 }) {
-  const crmCount = providers.filter((provider) => provider.category === "crm").length;
-  const enterpriseCount = providers.filter((provider) => provider.category === "enterprise").length;
+  const flowNodes = useMemo<Node<WorkflowNodeData>[]>(() => {
+    return nodes.map((node) => ({
+      id: node.id,
+      position: { x: node.x, y: node.y },
+      type: "workflowNode",
+      draggable: true,
+      data: {
+        label: node.label,
+        kind: node.kind,
+        detail: node.detail ?? null,
+        score: node.score ?? null
+      },
+      style: {
+        width: 200,
+        borderRadius: 18,
+        padding: 8,
+        border: `1px solid ${getWorkflowNodeStyle(node.kind).border}`,
+        background: getWorkflowNodeStyle(node.kind).background,
+        boxShadow: "0 16px 28px rgba(15, 23, 42, 0.08)"
+      },
+      sourcePosition: Position.Right,
+      targetPosition: Position.Left
+    }));
+  }, [nodes]);
+
+  const flowEdges = useMemo<Edge[]>(() => {
+    return edges.map((edge) => ({
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+      label: edge.label ?? undefined,
+      animated: true,
+      markerEnd: { type: MarkerType.ArrowClosed },
+      style: {
+        stroke: "color-mix(in srgb, var(--primary) 34%, var(--muted))",
+        strokeWidth: Math.max(1.5, edge.strength ?? 1.5)
+      }
+    }));
+  }, [edges]);
+  const graphKey = useMemo(
+    () => `${flowNodes.map((node) => node.id).join("|")}::${flowEdges.map((edge) => edge.id).join("|")}`,
+    [flowNodes, flowEdges]
+  );
 
   return (
-    <div className="grid">
-      <section className="card">
-        <h2>Knowledge Graph View</h2>
-        <p className="muted">
-          This tab visualizes how systems, processes, and AI outputs connect. It is structured so you can later replace the static graph with backend-generated graph data.
-        </p>
-        <div className="graph-shell">
-          <svg viewBox="0 0 760 320" className="graph-svg" role="img" aria-label="Knowledge graph of connected systems">
-            <line x1="120" y1="80" x2="300" y2="160" className="graph-line" />
-            <line x1="120" y1="240" x2="300" y2="160" className="graph-line" />
-            <line x1="300" y1="160" x2="500" y2="90" className="graph-line" />
-            <line x1="300" y1="160" x2="500" y2="230" className="graph-line" />
-            <line x1="500" y1="90" x2="660" y2="90" className="graph-line" />
-            <line x1="500" y1="230" x2="660" y2="230" className="graph-line" />
-            <g>
-              <circle cx="120" cy="80" r="44" className="graph-node primary" />
-              <text x="120" y="76" textAnchor="middle" className="graph-text-title">CRM</text>
-              <text x="120" y="96" textAnchor="middle" className="graph-text-sub">{crmCount} systems</text>
-            </g>
-            <g>
-              <circle cx="120" cy="240" r="44" className="graph-node secondary" />
-              <text x="120" y="236" textAnchor="middle" className="graph-text-title">ERP</text>
-              <text x="120" y="256" textAnchor="middle" className="graph-text-sub">{enterpriseCount} suites</text>
-            </g>
-            <g>
-              <circle cx="300" cy="160" r="52" className="graph-node center" />
-              <text x="300" y="156" textAnchor="middle" className="graph-text-title">LeadScore</text>
-              <text x="300" y="176" textAnchor="middle" className="graph-text-sub">AI core</text>
-            </g>
-            <g>
-              <circle cx="500" cy="90" r="40" className="graph-node accent" />
-              <text x="500" y="86" textAnchor="middle" className="graph-text-title">Chat</text>
-              <text x="500" y="106" textAnchor="middle" className="graph-text-sub">insights</text>
-            </g>
-            <g>
-              <circle cx="500" cy="230" r="40" className="graph-node accent" />
-              <text x="500" y="226" textAnchor="middle" className="graph-text-title">Scores</text>
-              <text x="500" y="246" textAnchor="middle" className="graph-text-sub">actions</text>
-            </g>
-            <g>
-              <circle cx="660" cy="90" r="34" className="graph-node report" />
-              <text x="660" y="86" textAnchor="middle" className="graph-text-title">PDF</text>
-              <text x="660" y="104" textAnchor="middle" className="graph-text-sub">report</text>
-            </g>
-            <g>
-              <circle cx="660" cy="230" r="34" className="graph-node report" />
-              <text x="660" y="226" textAnchor="middle" className="graph-text-title">Ops</text>
-              <text x="660" y="244" textAnchor="middle" className="graph-text-sub">handoff</text>
-            </g>
-          </svg>
-        </div>
-      </section>
-
-      <section className="grid two">
-        <div className="card">
-          <h3>Conversation Summary</h3>
-          <p className="muted">{summary}</p>
-          <ul>
-            <li>{connectedCount} connectors are currently saved in the workspace.</li>
-            <li>CRM systems should usually be connected before ERP or warehouse data.</li>
-            <li>AI chat can be used to explain why certain integrations should be prioritized.</li>
-          </ul>
-        </div>
-        <div className="card">
-          <h3>Key Points Report</h3>
-          <button className="button" type="button" onClick={() => exportReportAsPdf(summary)}>
-            Export PDF Report
-          </button>
-        </div>
-      </section>
+    <div className="workflow-canvas">
+      <ReactFlow
+        key={graphKey}
+        nodes={flowNodes}
+        edges={flowEdges}
+        nodeTypes={workflowNodeTypes}
+        fitView
+        fitViewOptions={{ padding: 0.15, duration: 500 }}
+        attributionPosition="bottom-left"
+        minZoom={0.35}
+        maxZoom={1.8}
+        panOnScroll
+        nodesDraggable
+        elementsSelectable
+      >
+        <Background gap={20} size={1} />
+        <MiniMap pannable zoomable />
+        <Controls />
+      </ReactFlow>
     </div>
+  );
+}
+
+function PlotlyChartsPanel({
+  charts
+}: {
+  charts: PlotlyChartSpec[];
+}) {
+  const [selectedChartId, setSelectedChartId] = useState<string>(charts[0]?.id ?? "");
+
+  useEffect(() => {
+    if (!charts.some((chart) => chart.id === selectedChartId)) {
+      setSelectedChartId(charts[0]?.id ?? "");
+    }
+  }, [charts, selectedChartId]);
+
+  const selectedChart = charts.find((chart) => chart.id === selectedChartId) ?? charts[0] ?? null;
+
+  if (!selectedChart) {
+    return (
+      <div className="ai-section">
+        <p className="muted">No Plotly charts available for the current analysis.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="ai-section">
+      {charts.length > 1 && (
+        <div className="prompt-chip-list" style={{ marginBottom: 16 }}>
+          {charts.map((chart) => (
+            <button
+              key={chart.id}
+              type="button"
+              className={`prompt-chip ${selectedChart.id === chart.id ? "active" : ""}`}
+              onClick={() => setSelectedChartId(chart.id)}
+            >
+              {chart.title}
+            </button>
+          ))}
+        </div>
+      )}
+      {selectedChart.description && (
+        <p className="muted" style={{ marginBottom: 12 }}>
+          {selectedChart.description}
+        </p>
+      )}
+      <div className="workflow-canvas" style={{ padding: 12 }}>
+        <Plot
+          data={selectedChart.data as never}
+          layout={
+            {
+              autosize: true,
+              font: { color: "#cbd5e1" },
+              ...selectedChart.layout
+            } as never
+          }
+          config={
+            {
+              responsive: true,
+              displaylogo: false,
+              ...selectedChart.config
+            } as never
+          }
+          style={{ width: "100%", height: "100%" }}
+          useResizeHandler
+        />
+      </div>
+    </div>
+  );
+}
+
+function KnowledgeGraphTab({
+  assistantView,
+  connectedCount
+}: {
+  assistantView: AssistantView;
+  connectedCount: number;
+}) {
+  const activeConnectorCount = useMemo(() => {
+    const fromGraph = new Set(
+      assistantView.graph_nodes.map((node) => node.connector).filter((value): value is string => Boolean(value))
+    ).size;
+    return fromGraph || connectedCount;
+  }, [assistantView.graph_nodes, connectedCount]);
+  const hasCharts = assistantView.plotly_charts.length > 0;
+  const hasNetwork = assistantView.graph_nodes.length > 0;
+
+  return (
+    <section className="card">
+      {hasCharts ? (
+        <PlotlyChartsPanel charts={assistantView.plotly_charts} />
+      ) : hasNetwork ? (
+        <ReactFlowProvider>
+          <KnowledgeGraphCanvas nodes={assistantView.graph_nodes} edges={assistantView.graph_edges} />
+        </ReactFlowProvider>
+      ) : (
+        <div className="ai-section">
+          <p className="muted">Run a Talk to AI query first to generate the current-session knowledge graph.</p>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function shouldAutoOpenKnowledgeGraph(message: string): boolean {
+  const value = message.toLowerCase();
+  return (
+    value.includes("knowledge graph") ||
+    value.includes("knowldge graph") ||
+    value.includes("create a graph") ||
+    value.includes("generate a graph") ||
+    value.includes("bar chart") ||
+    value.includes("chart") ||
+    value.includes("plotly") ||
+    value.includes("graph based on this") ||
+    value.includes("illustrate churn") ||
+    value.includes("show graph")
   );
 }
 
@@ -649,14 +1042,34 @@ export function IntelligenceWorkspace({
     buildLocalAssistantView(initialSources, { contacts: [], companies: [] }, {})
   );
   const knowledgeGraphSummary =
+    assistantView.graph_reasoning_summary ??
     "The current frontend organizes lead operations across three layers: connected source systems, AI analysis, and reporting. CRM systems remain primary lead-entry points, enterprise suites enrich account context, and the scoring platform centralizes operational decisions.";
 
   useEffect(() => {
-    setAssistantView((current) =>
-      current.mode === "automation" && current.workflow
-        ? current
-        : buildLocalAssistantView(sources, hubspotData, connectorDatasets)
-    );
+    setAssistantView((current) => {
+      if (current.mode === "automation" && current.workflow) {
+        return current;
+      }
+      return {
+        ...buildLocalAssistantView(sources, hubspotData, connectorDatasets),
+        used_sources: current.used_sources,
+        query_plan: current.query_plan,
+        execution: current.execution,
+        records: current.records,
+        citations: current.citations,
+        confidence: current.confidence,
+        agent_runs: current.agent_runs,
+        token_usage: current.token_usage,
+        graph_reasoning_summary: current.graph_reasoning_summary,
+        graph_nodes: current.graph_nodes,
+        graph_edges: current.graph_edges,
+        plotly_charts: current.plotly_charts,
+        conversion_summary: current.conversion_summary,
+        churn_summary: current.churn_summary,
+        conversion_signals: current.conversion_signals,
+        churn_signals: current.churn_signals
+      };
+    });
   }, [sources, hubspotData, connectorDatasets]);
 
   function handleHubSpotWorkspaceData(data: HubSpotWorkspaceData) {
@@ -671,6 +1084,17 @@ export function IntelligenceWorkspace({
     const m = mem as WorkspaceMemoryState;
     if (m.connector_datasets && typeof m.connector_datasets === "object") {
       setConnectorDatasets(m.connector_datasets as ConnectorDatasets);
+    }
+    if (m.lead_intelligence) {
+      setAssistantView((current) => ({
+        ...current,
+        ...hydrateAssistantViewFromMemory(
+          m,
+          m.sources?.length ? m.sources : sources,
+          m.hubspot_data ?? hubspotData,
+          (m.connector_datasets as ConnectorDatasets) ?? connectorDatasets
+        )
+      }));
     }
   }
 
@@ -705,70 +1129,21 @@ export function IntelligenceWorkspace({
       return;
     }
 
-    const existingSession = window.localStorage.getItem("leadscore-workspace-session-v2");
-    const sessionId = existingSession || window.crypto.randomUUID();
-    if (!existingSession) {
-      window.localStorage.setItem("leadscore-workspace-session-v2", sessionId);
-    }
+    const sessionId = window.crypto.randomUUID();
     setMemorySessionId(sessionId);
+    setActiveTab("connect");
+    setHubspotData({ contacts: [], companies: [] });
+    setConnectorDatasets({});
+    setMessages(buildDefaultMessages());
+    setAssistantView(buildLocalAssistantView(initialSources, { contacts: [], companies: [] }, {}));
 
     if (!backendAvailable) {
       setMemoryReady(true);
       return;
     }
 
-    let cancelled = false;
-    fetch(`${API_URL}/api/workspace-memory/${sessionId}`)
-      .then(async (response) => {
-        if (!response.ok) {
-          throw new Error("Failed to load workspace memory");
-        }
-        return (await response.json()) as WorkspaceMemoryState;
-      })
-      .then((memory) => {
-        if (cancelled) {
-          return;
-        }
-        if (memory.active_tab && TAB_OPTIONS.some((tab) => tab.id === memory.active_tab)) {
-          setActiveTab(memory.active_tab as TabId);
-        }
-        if (memory.sources.length > 0) {
-          setSources(memory.sources);
-        }
-        const hubSlice = memory.connector_datasets?.hubspot;
-        if (hubSlice && typeof hubSlice === "object" && !Array.isArray(hubSlice)) {
-          const rec = hubSlice as { contacts?: HubSpotWorkspaceData["contacts"]; companies?: HubSpotWorkspaceData["companies"] };
-          setHubspotData({
-            contacts: Array.isArray(rec.contacts) ? rec.contacts : [],
-            companies: Array.isArray(rec.companies) ? rec.companies : []
-          });
-        } else if (memory.hubspot_data) {
-          setHubspotData(memory.hubspot_data);
-        }
-        if (memory.connector_datasets && typeof memory.connector_datasets === "object") {
-          setConnectorDatasets(memory.connector_datasets as ConnectorDatasets);
-        }
-        const hasLegacyConversation = memory.conversation.some(
-          (message) =>
-            message.content.includes("Start with HubSpot or Salesforce") ||
-            message.content.includes("Focus on three questions") ||
-            message.content.includes("companyies")
-        );
-        if (memory.conversation.length > 0 && !hasLegacyConversation) {
-          setMessages(memory.conversation);
-        }
-      })
-      .catch(() => undefined)
-      .finally(() => {
-        if (!cancelled) {
-          setMemoryReady(true);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [backendAvailable]);
+    setMemoryReady(true);
+  }, [backendAvailable, initialSources]);
 
   useEffect(() => {
     if (!backendAvailable || !memorySessionId || !memoryReady) {
@@ -793,7 +1168,8 @@ export function IntelligenceWorkspace({
     }
 
     setChatBusy(true);
-    const userMessage: ConversationMessage = { role: "user", content: draft.trim() };
+    const prompt = draft.trim();
+    const userMessage: ConversationMessage = { role: "user", content: prompt };
     const nextConversation = [...messages, userMessage];
     setMessages(nextConversation);
     setDraft("");
@@ -812,15 +1188,16 @@ export function IntelligenceWorkspace({
 
     try {
       await persistWorkspaceMemory(memorySessionId);
-      const response = await fetch(`${API_URL}/api/workspace-chat`, {
+      const response = await fetch(`${API_URL}/api/chat/query`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           session_id: memorySessionId,
-          message: userMessage.content
+          message: userMessage.content,
+          connector_scope: []
         })
       });
-      const data = (await response.json()) as WorkspaceChatResponse | { detail?: string };
+      const data = (await response.json()) as ChatQueryResponse | { detail?: string };
       if (!response.ok || !("memory" in data)) {
         throw new Error(("detail" in data && data.detail) || "Workspace chat failed");
       }
@@ -835,8 +1212,27 @@ export function IntelligenceWorkspace({
         data_sources: data.data_sources,
         workflow: data.workflow,
         recommended_scopes: data.recommended_scopes,
-        suggested_actions: data.suggested_actions
+        suggested_actions: data.suggested_actions,
+        used_sources: data.used_sources,
+        query_plan: data.query_plan,
+        execution: data.execution,
+        records: data.records,
+        citations: data.citations,
+        confidence: data.confidence,
+        agent_runs: data.agent_runs,
+        token_usage: data.token_usage,
+        graph_reasoning_summary: data.graph_reasoning_summary,
+        graph_nodes: data.graph_nodes,
+        graph_edges: data.graph_edges,
+        plotly_charts: data.plotly_charts,
+        conversion_summary: data.conversion_summary,
+        churn_summary: data.churn_summary,
+        conversion_signals: data.conversion_signals ?? [],
+        churn_signals: data.churn_signals ?? []
       });
+      if (shouldAutoOpenKnowledgeGraph(prompt) && data.graph_nodes.length > 0) {
+        setActiveTab("graph");
+      }
     } catch (error) {
       setMessages((current) => [
         ...current,
@@ -853,10 +1249,7 @@ export function IntelligenceWorkspace({
   return (
     <div className="grid">
       <section className="card">
-        <h1 className="title">LeadScore AI Workspace</h1>
-        <p className="muted">
-          Manage CRM/ERP connectors, question loaded preview data across connectors, and let the AI plan campaigns or automations from one workspace.
-        </p>
+        <h1 className="title">AI Lead Scoring Churn Analysis Platform</h1>
       </section>
 
       {!backendAvailable && (
@@ -886,17 +1279,13 @@ export function IntelligenceWorkspace({
 
       {activeTab === "connect" && (
         <div className="grid">
-          <section className="card">
-            <h2>CRM / ERP Import Hub</h2>
-            <p className="muted">
-              Select from backend-accessible systems and connectors. The frontend uses the provider catalog exposed by the backend, which is the place to surface MCP-accessible or installed systems over time.
-            </p>
-          </section>
           <SourceManager
             initialSources={sources}
             providers={providers}
             onSourcesChanged={setSources}
             onHubSpotDataChanged={handleHubSpotWorkspaceData}
+            hubspotData={hubspotData}
+            connectorDatasets={connectorDatasets}
             workspaceSessionId={memoryReady ? memorySessionId : null}
             onWorkspaceMemoryUpdated={handleWorkspaceMemoryUpdated}
           />
@@ -906,7 +1295,6 @@ export function IntelligenceWorkspace({
       {activeTab === "ai" && (
         <AnalyticsAndChatTab
           assistantView={assistantView}
-          sources={sources}
           hubspotData={hubspotData}
           connectorDatasets={connectorDatasets}
           messages={messages}
@@ -919,7 +1307,7 @@ export function IntelligenceWorkspace({
       )}
 
       {activeTab === "graph" && (
-        <KnowledgeGraphTab providers={providers} connectedCount={sources.length} summary={knowledgeGraphSummary} />
+        <KnowledgeGraphTab assistantView={assistantView} connectedCount={sources.length} />
       )}
     </div>
   );

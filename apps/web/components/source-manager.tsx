@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type SourceRecord = {
   id: string;
@@ -24,6 +24,13 @@ type SourceRecord = {
     base_url?: string | null;
     zoho_accounts_host?: string | null;
     oauth_scope?: string | null;
+    monday_board_ids?: string | null;
+    mcp_command?: string | null;
+    mcp_args?: string[] | null;
+    mcp_env?: Record<string, string> | null;
+    mcp_tool_name?: string | null;
+    mcp_profile?: string | null;
+    params?: Record<string, unknown> | null;
   };
 };
 
@@ -45,6 +52,19 @@ type ProviderDefinition = {
   recommended_order: number;
   fields: ProviderField[];
 };
+
+const ALLOWED_PROVIDER_KEYS = new Set([
+  "hubspot",
+  "mondaycrm",
+  "zoho",
+  "postgres",
+  "supabase",
+  "mysql",
+  "mongodb",
+  "dubai_dld_mcp",
+  "excel",
+  "csv"
+]);
 
 type SourceTestResult = {
   source_type: string;
@@ -189,6 +209,8 @@ export function SourceManager({
   providers,
   onSourcesChanged,
   onHubSpotDataChanged,
+  hubspotData = { contacts: [], companies: [] },
+  connectorDatasets = {},
   workspaceSessionId,
   onWorkspaceMemoryUpdated
 }: {
@@ -196,6 +218,8 @@ export function SourceManager({
   providers: ProviderDefinition[];
   onSourcesChanged?: (sources: SourceRecord[]) => void;
   onHubSpotDataChanged?: (data: HubSpotWorkspaceData) => void;
+  hubspotData?: HubSpotWorkspaceData;
+  connectorDatasets?: Record<string, unknown>;
   /** When set, successful CRM **Test connection** ingests ``preview_rows`` into workspace memory (Redis) for Talk to AI. */
   workspaceSessionId?: string | null;
   /** Called after connector preview is written to workspace memory (optional refresh). */
@@ -218,19 +242,126 @@ export function SourceManager({
   });
   const [message, setMessage] = useState("");
   const [testResult, setTestResult] = useState<SourceTestResult | null>(null);
-  const hasProviders = providers.length > 0;
+  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
+  const [fileBusy, setFileBusy] = useState(false);
+  const [sessionConnectors, setSessionConnectors] = useState<
+    Array<{ key: string; label: string; connection: string; connectedAt: string }>
+  >([]);
+  const visibleProviders = useMemo(
+    () => providers.filter((provider) => ALLOWED_PROVIDER_KEYS.has(provider.key)),
+    [providers]
+  );
+  const hasProviders = visibleProviders.length > 0;
 
   const selectedSourceMeta = useMemo(
-    () => providers.find((provider) => provider.key === sourceType),
-    [providers, sourceType]
+    () => visibleProviders.find((provider) => provider.key === sourceType),
+    [visibleProviders, sourceType]
   );
 
   const groupedProviders = useMemo(() => {
-    return providers.reduce<Record<string, ProviderDefinition[]>>((groups, provider) => {
+    return visibleProviders.reduce<Record<string, ProviderDefinition[]>>((groups, provider) => {
       groups[provider.category] = [...(groups[provider.category] ?? []), provider];
       return groups;
     }, {});
-  }, [providers]);
+  }, [visibleProviders]);
+
+  useEffect(() => {
+    if (!visibleProviders.length) {
+      return;
+    }
+    if (!visibleProviders.some((provider) => provider.key === sourceType)) {
+      const fallback = visibleProviders[0];
+      setSourceType(fallback.key);
+      setFormState(getDefaultState(fallback));
+    }
+  }, [visibleProviders, sourceType]);
+
+  useEffect(() => {
+    onSourcesChanged?.(sources);
+  }, [onSourcesChanged, sources]);
+
+  const mergedSessionDatasets = useMemo(() => {
+    const normalizedDatasets = Object.entries(connectorDatasets || {}).reduce<
+      Record<
+        string,
+        {
+          contacts?: Array<Record<string, string | number | null>>;
+          companies?: Array<Record<string, string | number | null>>;
+          records?: Array<Record<string, string | number | null>>;
+        }
+      >
+    >((acc, [key, value]) => {
+      if (value && typeof value === "object") {
+        const maybeDataset = value as {
+          contacts?: Array<Record<string, string | number | null>>;
+          companies?: Array<Record<string, string | number | null>>;
+          records?: Array<Record<string, string | number | null>>;
+        };
+        acc[key] = {
+          contacts: Array.isArray(maybeDataset.contacts) ? maybeDataset.contacts : [],
+          companies: Array.isArray(maybeDataset.companies) ? maybeDataset.companies : [],
+          records: Array.isArray(maybeDataset.records) ? maybeDataset.records : []
+        };
+      }
+      return acc;
+    }, {});
+
+    return {
+      ...normalizedDatasets,
+      hubspot: {
+        contacts: hubspotData.contacts,
+        companies: hubspotData.companies,
+        records: []
+      }
+    };
+  }, [connectorDatasets, hubspotData]);
+
+  useEffect(() => {
+    setSessionConnectors([]);
+  }, [workspaceSessionId]);
+
+  useEffect(() => {
+    const datasetKeys = Object.entries(mergedSessionDatasets)
+      .filter(
+        ([, dataset]) =>
+          (dataset.contacts?.length ?? 0) + (dataset.companies?.length ?? 0) + (dataset.records?.length ?? 0) > 0
+      )
+      .map(([key]) => key);
+    const directMcpKeys = sources
+      .filter((source) => source.is_active && source.id.startsWith("session-") && (source.config.mcp_profile || "").length > 0)
+      .map((source) => source.source_type);
+    const activeKeys = Array.from(new Set([...datasetKeys, ...directMcpKeys]));
+
+    if (activeKeys.length === 0) {
+      return;
+    }
+
+    setSessionConnectors((current) => {
+      const next = [...current];
+      activeKeys.forEach((key) => {
+        if (next.some((item) => item.key === key)) {
+          return;
+        }
+        const provider = visibleProviders.find((item) => item.key === key);
+        const source = sources.find((item) => item.source_type === key);
+        next.push({
+          key,
+          label: provider?.label ?? source?.name ?? key,
+          connection:
+            source?.config.connection_url ??
+            source?.config.file_path ??
+            source?.config.base_url ??
+            source?.config.monday_board_ids ??
+            source?.config.mcp_command ??
+            source?.config.database ??
+            source?.config.collection ??
+            "session preview",
+          connectedAt: source?.last_synced_at ?? source?.created_at ?? new Date().toISOString()
+        });
+      });
+      return next;
+    });
+  }, [mergedSessionDatasets, visibleProviders, sources]);
 
   function updateConfig(name: string, value: string) {
     setFormState((current) => ({
@@ -240,6 +371,52 @@ export function SourceManager({
         [name]: value
       }
     }));
+  }
+
+  function rememberSessionConnector(provider: ProviderDefinition | undefined, config: Record<string, string>) {
+    if (!provider) {
+      return;
+    }
+    const connection =
+      config.connection_url ||
+      config.file_path ||
+      config.base_url ||
+      config.monday_board_ids ||
+      config.object_name ||
+      "session preview";
+    setSessionConnectors((current) => {
+      const next = current.filter((item) => item.key !== provider.key);
+      next.unshift({
+        key: provider.key,
+        label: provider.label,
+        connection,
+        connectedAt: new Date().toISOString()
+      });
+      return next;
+    });
+  }
+
+  function registerSessionSource(provider: ProviderDefinition | undefined) {
+    if (!provider || provider.category !== "mcp") {
+      return;
+    }
+    const payload = getPayload(formState, provider);
+    const nextSource: SourceRecord = {
+      id: `session-${provider.key}`,
+      name: payload.name,
+      source_type: payload.source_type,
+      is_active: true,
+      created_at: new Date().toISOString(),
+      last_synced_at: new Date().toISOString(),
+      config: {
+        ...(payload.config as SourceRecord["config"]),
+        mcp_profile: provider.key
+      }
+    };
+    setSources((current) => {
+      const next = [nextSource, ...current.filter((item) => item.id !== nextSource.id)];
+      return next;
+    });
   }
 
   function getHubSpotBrowsePayload(objectName: "contacts" | "companies", after: string | null = null) {
@@ -270,20 +447,26 @@ export function SourceManager({
   }
 
   function applyHubSpotPreview(objectName: "contacts" | "companies", data: HubSpotPreviewResponse) {
-    const mappedRows = data.records.map((record) => {
+    const mappedRows: Array<Record<string, string | number | null>> = data.records.map((record) => {
       if (objectName === "contacts") {
         return {
           id: record.external_id ?? null,
           name: record.full_name ?? null,
           email: record.email ?? null,
           company: record.company ?? null,
-          jobtitle: record.job_title ?? null
+          jobtitle: record.job_title ?? null,
+          domain: null,
+          industry: null,
+          country: null
         };
       }
 
       return {
         id: record.external_id ?? null,
         name: record.company ?? record.full_name ?? null,
+        email: null,
+        company: null,
+        jobtitle: null,
         domain: null,
         industry: record.industry ?? null,
         country: record.country ?? null
@@ -501,6 +684,7 @@ export function SourceManager({
       setBusy("testing");
       setMessage("");
       const isHubSpot = selectedSourceMeta?.key === "hubspot";
+      const isMcp = selectedSourceMeta?.category === "mcp";
       const endpoint = isHubSpot ? `${API_URL}/api/hubspot/preview` : `${API_URL}/api/sources/test`;
       const response = await fetch(endpoint, {
         method: "POST",
@@ -517,21 +701,44 @@ export function SourceManager({
           | "contacts"
           | "companies";
         applyHubSpotPreview(objectName, data as HubSpotPreviewResponse);
+        const hubspotRows = (data as HubSpotPreviewResponse).records ?? [];
+        if (workspaceSessionId && selectedSourceMeta && hubspotRows.length > 0) {
+          const ingestRes = await fetch(`${API_URL}/api/workspace-memory/connector-preview`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              session_id: workspaceSessionId,
+              connector_key: selectedSourceMeta.key,
+              contacts: objectName === "contacts" ? hubspotRows : [],
+              companies: objectName === "companies" ? hubspotRows : [],
+              records: []
+            })
+          });
+          const mem = await ingestRes.json();
+          if (ingestRes.ok) {
+            onWorkspaceMemoryUpdated?.(mem);
+            rememberSessionConnector(selectedSourceMeta, formState.config);
+          }
+        }
       }
 
       const testPayload = data as SourceTestResult;
-      const isCrm = selectedSourceMeta?.category === "crm";
       const rows = testPayload.preview_rows ?? [];
-      if (!isHubSpot && workspaceSessionId && isCrm && rows.length > 0 && selectedSourceMeta) {
+      const useRecordsBucket = selectedSourceMeta?.key === "dubai_dld_mcp";
+      if (isMcp && selectedSourceMeta) {
+        rememberSessionConnector(selectedSourceMeta, formState.config);
+        registerSessionSource(selectedSourceMeta);
+        setMessage("Connection test succeeded. This MCP connector is now active for direct AI Assistant queries.");
+      } else if (!isHubSpot && workspaceSessionId && rows.length > 0 && selectedSourceMeta) {
         const ingestRes = await fetch(`${API_URL}/api/workspace-memory/connector-preview`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             session_id: workspaceSessionId,
             connector_key: selectedSourceMeta.key,
-            contacts: rows,
+            contacts: useRecordsBucket ? [] : rows,
             companies: [],
-            records: []
+            records: useRecordsBucket ? rows : []
           })
         });
         const mem = await ingestRes.json();
@@ -541,10 +748,19 @@ export function SourceManager({
           );
         } else {
           onWorkspaceMemoryUpdated?.(mem);
+          rememberSessionConnector(selectedSourceMeta, formState.config);
           setMessage("Connection test succeeded. Preview rows saved for Talk to AI (workspace memory).");
         }
       } else {
-        setMessage("Connection test succeeded.");
+        let msg = "Connection test succeeded.";
+        if (selectedSourceMeta?.key === "mondaycrm" && (testPayload.sample_count ?? 0) === 0) {
+          msg +=
+            " No board items were returned — use your real board ID from the URL (.../boards/<id>/...) or paste the full board link; sample IDs like 1234567890 are placeholders.";
+        }
+        if (!isHubSpot && rows.length === 0 && workspaceSessionId && selectedSourceMeta) {
+          msg += " Talk to AI only stores preview data when this test returns at least one row.";
+        }
+        setMessage(msg);
       }
     } catch (error) {
       setTestResult(null);
@@ -553,6 +769,13 @@ export function SourceManager({
       setBusy("idle");
     }
   }
+
+  const previewContacts =
+    hubspotContacts?.records ??
+    (hubspotData.contacts.length > 0 ? hubspotData.contacts : []);
+  const previewCompanies =
+    hubspotCompanies?.records ??
+    (hubspotData.companies.length > 0 ? hubspotData.companies : []);
 
   async function handleHubSpotBrowse(
     objectName: "contacts" | "companies",
@@ -573,6 +796,7 @@ export function SourceManager({
           throw new Error(previewData.detail ?? `Failed to load HubSpot ${objectName}`);
         }
         applyHubSpotPreview(objectName, previewData as HubSpotPreviewResponse);
+        rememberSessionConnector(selectedSourceMeta, formState.config);
         setHubspotPrev((prev) => ({
           ...prev,
           [objectName]: []
@@ -615,13 +839,6 @@ export function SourceManager({
         }));
       }
 
-      if (direction === "initial") {
-        setHubspotPrev((prev) => ({
-          ...prev,
-          [objectName]: []
-        }));
-      }
-
       if (objectName === "contacts") {
         setHubspotContacts(data);
         onHubSpotDataChanged?.({
@@ -643,6 +860,54 @@ export function SourceManager({
     }
   }
 
+  async function handleFileUpload() {
+    if (!selectedSourceMeta || !uploadedFile) {
+      setMessage("Choose an Excel or CSV file first.");
+      return;
+    }
+    try {
+      setFileBusy(true);
+      setMessage("");
+      const formData = new FormData();
+      formData.append("file", uploadedFile);
+      const response = await fetch(`${API_URL}/api/imports/file-preview`, {
+        method: "POST",
+        body: formData
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail ?? "File upload failed");
+      }
+      const preview = data as SourceTestResult;
+      setTestResult(preview);
+      const rows = preview.preview_rows ?? [];
+      if (workspaceSessionId && rows.length > 0) {
+        const ingestRes = await fetch(`${API_URL}/api/workspace-memory/connector-preview`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            session_id: workspaceSessionId,
+            connector_key: selectedSourceMeta.key,
+            contacts: rows,
+            companies: [],
+            records: []
+          })
+        });
+        const mem = await ingestRes.json();
+        if (!ingestRes.ok) {
+          throw new Error((mem as { detail?: string }).detail ?? "Workspace preview ingest failed");
+        }
+        onWorkspaceMemoryUpdated?.(mem);
+      }
+      rememberSessionConnector(selectedSourceMeta, formState.config);
+      setMessage("File uploaded and preview rows saved for Talk to AI.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "File upload failed");
+    } finally {
+      setFileBusy(false);
+    }
+  }
+
   async function handleSave() {
     try {
       setBusy("saving");
@@ -657,9 +922,7 @@ export function SourceManager({
         throw new Error(data.detail ?? "Saving source failed");
       }
       setSources((current) => {
-        const next = [data, ...current];
-        onSourcesChanged?.(next);
-        return next;
+        return [data, ...current];
       });
       setMessage("Source saved. You can sync it from the table below.");
       setTestResult(null);
@@ -690,7 +953,6 @@ export function SourceManager({
             }
           : source
       );
-      onSourcesChanged?.(next);
       return next;
     });
     setMessage(`Synced ${data.imported} records from ${data.source_name}.`);
@@ -698,14 +960,6 @@ export function SourceManager({
 
   return (
     <div className="grid">
-      <section className="card">
-        <h2>Connect Data Sources</h2>
-        <p className="muted">
-          Create connectors for mainstream CRMs, enterprise sales suites, databases, and files directly from the
-          website. The backend stores the connection config and normalizes incoming records into one lead schema.
-        </p>
-      </section>
-
       {!hasProviders && (
         <section className="card warning">
           <strong>No provider catalog loaded</strong>
@@ -748,8 +1002,9 @@ export function SourceManager({
               disabled={!hasProviders}
               onChange={(event) => {
                 const nextType = event.target.value;
-                const provider = providers.find((item) => item.key === nextType);
+                const provider = visibleProviders.find((item) => item.key === nextType);
                 setSourceType(nextType);
+                setUploadedFile(null);
                 if (provider) {
                   setFormState(getDefaultState(provider));
                 }
@@ -757,7 +1012,7 @@ export function SourceManager({
                 setMessage("");
               }}
             >
-              {providers.map((option) => (
+              {visibleProviders.map((option) => (
                 <option key={option.key} value={option.key}>
                   {option.label}
                 </option>
@@ -852,6 +1107,39 @@ export function SourceManager({
             </label>
           ))}
 
+          {(selectedSourceMeta?.key === "excel" || selectedSourceMeta?.key === "csv") && (
+            <div className="card oauth-card">
+              <strong>Browser File Upload</strong>
+              <p className="muted">
+                Upload a CRM-compatible Excel or CSV template for the current session. This is ideal for lead scoring and
+                churn analysis fields like <code>lifecycle_stage</code>, <code>lead_status</code>, <code>engagement_score</code>,
+                <code> health_score</code>, <code>support_ticket_count</code>, and <code>churn_risk</code>.
+              </p>
+              <input
+                type="file"
+                accept={selectedSourceMeta.key === "excel" ? ".xlsx,.xls" : ".csv"}
+                disabled={!hasProviders || fileBusy}
+                onChange={(event) => setUploadedFile(event.target.files?.[0] ?? null)}
+              />
+              <div className="actions" style={{ marginTop: 12 }}>
+                <button className="button" type="button" disabled={!uploadedFile || fileBusy} onClick={handleFileUpload}>
+                  {fileBusy ? "Uploading..." : "Upload file"}
+                </button>
+                <a
+                  className="button"
+                  href={
+                    selectedSourceMeta.key === "excel"
+                      ? "/templates/lead_intelligence_template.xlsx"
+                      : "/templates/lead_intelligence_template.csv"
+                  }
+                  download
+                >
+                  Download template
+                </a>
+              </div>
+            </div>
+          )}
+
           <div className="actions">
             <button className="button" type="button" disabled={!hasProviders || busy !== "idle"} onClick={handleTest}>
               {busy === "testing" ? "Testing..." : "Test connection"}
@@ -896,7 +1184,7 @@ export function SourceManager({
 
       {selectedSourceMeta?.key === "hubspot" && (
         <section className="card">
-          <h2>HubSpot Data Preview</h2>
+          <h2>Connector Data Preview</h2>
           <div className="grid two">
             <div className="card">
               <div className="table-header">
@@ -930,12 +1218,12 @@ export function SourceManager({
                   </tr>
                 </thead>
                 <tbody>
-                  {(hubspotContacts?.records ?? []).length === 0 && (
+                  {previewContacts.length === 0 && (
                     <tr>
                       <td colSpan={4}>No contacts loaded yet.</td>
                     </tr>
                   )}
-                  {(hubspotContacts?.records ?? []).map((record, index) => (
+                  {previewContacts.map((record, index) => (
                     <tr key={`${record.id ?? "contact"}-${index}`}>
                       <td>{`${record.firstname ?? ""} ${record.lastname ?? ""}`.trim() || record.name || "-"}</td>
                       <td>{record.email ?? "-"}</td>
@@ -979,12 +1267,12 @@ export function SourceManager({
                   </tr>
                 </thead>
                 <tbody>
-                  {(hubspotCompanies?.records ?? []).length === 0 && (
+                  {previewCompanies.length === 0 && (
                     <tr>
                       <td colSpan={4}>No companies loaded yet.</td>
                     </tr>
                   )}
-                  {(hubspotCompanies?.records ?? []).map((record, index) => (
+                  {previewCompanies.map((record, index) => (
                     <tr key={`${record.id ?? "company"}-${index}`}>
                       <td>{record.name ?? "-"}</td>
                       <td>{record.domain ?? "-"}</td>
@@ -1000,34 +1288,28 @@ export function SourceManager({
       )}
 
       <section className="card">
-        <h2>Registered Connectors</h2>
+        <h2>Active Session Connectors</h2>
         <table className="table">
           <thead>
             <tr>
               <th>Name</th>
               <th>Type</th>
               <th>Connection</th>
-              <th>Last Sync</th>
-              <th>Action</th>
+              <th>Connected At</th>
             </tr>
           </thead>
           <tbody>
-            {sources.length === 0 && (
+            {sessionConnectors.length === 0 && (
               <tr>
-                <td colSpan={5}>No sources connected yet.</td>
+                <td colSpan={4}>No active connectors in this session yet.</td>
               </tr>
             )}
-            {sources.map((source) => (
-              <tr key={source.id}>
-                <td>{source.name}</td>
-                <td>{source.source_type}</td>
-                <td>{source.config.connection_url ?? source.config.file_path ?? "configured"}</td>
-                <td>{source.last_synced_at ? new Date(source.last_synced_at).toLocaleString() : "Never"}</td>
-                <td>
-                  <button className="button" type="button" onClick={() => handleSync(source.id)}>
-                    Sync now
-                  </button>
-                </td>
+            {sessionConnectors.map((source) => (
+              <tr key={source.key}>
+                <td>{source.label}</td>
+                <td>{source.key}</td>
+                <td>{source.connection}</td>
+                <td>{new Date(source.connectedAt).toLocaleString()}</td>
               </tr>
             ))}
           </tbody>

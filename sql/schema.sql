@@ -50,3 +50,32 @@ create table if not exists lead_scores (
   explanation text not null,
   scored_at timestamptz not null default now()
 );
+
+create table if not exists chat_sessions (
+  id uuid primary key default gen_random_uuid(),
+  session_key text not null unique,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists query_runs (
+  id uuid primary key default gen_random_uuid(),
+  session_key text not null,
+  user_question text not null,
+  plan_json jsonb not null,
+  executed_query text not null,
+  used_sources jsonb not null default '[]'::jsonb,
+  confidence numeric not null default 0,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists query_run_results (
+  id uuid primary key default gen_random_uuid(),
+  query_run_id uuid not null references query_runs(id) on delete cascade,
+  entity_type text not null,
+  source text not null,
+  source_record_id text not null,
+  title text,
+  payload jsonb not null,
+  created_at timestamptz not null default now()
+);

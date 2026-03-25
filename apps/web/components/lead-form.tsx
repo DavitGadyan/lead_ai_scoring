@@ -74,7 +74,7 @@ export function LeadForm() {
           <textarea
             name="notes"
             rows={4}
-            defaultValue="We need lead qualification automation within 60 days and want a demo with pricing."
+            defaultValue="We need lead qualification automation within 60 days and want pricing and an implementation review."
           />
           <button className="button" type="submit" disabled={loading}>
             {loading ? "Scoring..." : "Score lead"}

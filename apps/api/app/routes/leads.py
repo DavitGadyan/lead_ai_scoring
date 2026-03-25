@@ -12,7 +12,9 @@ from ..oauth import (
     resolve_zoho_authorize_credentials,
     zoho_token_accounts_host,
 )
+from ..agent_orchestrator import run_chat_query
 from ..llm import build_workspace_chat_response, generate_workspace_chat_reply
+from ..query_audit import persist_query_run
 from ..memory import (
     append_workspace_conversation,
     get_workspace_memory,
@@ -27,6 +29,8 @@ from ..schemas import (
     HubSpotExchangeRequest,
     HubSpotTokenResponse,
     HubSpotPreviewResponse,
+    ChatQueryRequest,
+    ChatQueryResponse,
     ImportResult,
     LeadBatchIn,
     LeadCanonical,
@@ -59,6 +63,8 @@ from ..services import (
     persist_batch,
     persist_lead_and_score,
     preview_hubspot_source,
+    preview_uploaded_file,
+    parse_csv,
     sync_source,
     test_source,
 )
@@ -258,6 +264,61 @@ def workspace_chat(payload: WorkspaceChatRequest) -> WorkspaceChatResponse:
     return response.model_copy(update={"answer": answer, "memory": updated_memory})
 
 
+@router.post("/chat/query", response_model=ChatQueryResponse)
+def chat_query(payload: ChatQueryRequest) -> ChatQueryResponse:
+    memory = get_workspace_memory(payload.session_id)
+    response = run_chat_query(
+        session_id=payload.session_id,
+        message=payload.message,
+        memory=memory,
+        connector_scope=payload.connector_scope,
+    )
+    updated_memory = append_workspace_conversation(
+        WorkspaceChatRequest(session_id=payload.session_id, message=payload.message),
+        response.answer,
+    )
+    lead_intelligence_payload = {
+        "mode": response.mode,
+        "title": response.title,
+        "summary": response.summary,
+        "used_sources": response.used_sources,
+        "query_plan": response.query_plan.model_dump(mode="json") if response.query_plan else None,
+        "execution": response.execution.model_dump(mode="json") if response.execution else None,
+        "records": [record.model_dump(mode="json") for record in response.records],
+        "confidence": response.confidence,
+        "agent_runs": [run.model_dump(mode="json") for run in response.agent_runs],
+        "token_usage": response.token_usage.model_dump(mode="json") if response.token_usage else None,
+        "graph_reasoning_summary": response.graph_reasoning_summary,
+        "graph_nodes": [node.model_dump(mode="json") for node in response.graph_nodes],
+        "graph_edges": [edge.model_dump(mode="json") for edge in response.graph_edges],
+        "plotly_charts": [chart.model_dump(mode="json") for chart in response.plotly_charts],
+        "conversion_summary": response.conversion_summary.model_dump(mode="json") if response.conversion_summary else None,
+        "churn_summary": response.churn_summary.model_dump(mode="json") if response.churn_summary else None,
+        "conversion_signals": [signal.model_dump(mode="json") for signal in response.conversion_signals],
+        "churn_signals": [signal.model_dump(mode="json") for signal in response.churn_signals],
+        "citations": [citation.model_dump(mode="json") for citation in response.citations],
+    }
+    updated_memory = save_workspace_memory(
+        WorkspaceMemoryUpsertRequest(
+            session_id=payload.session_id,
+            conversation=updated_memory.conversation,
+            knowledge_graph_summary=response.graph_reasoning_summary,
+            lead_intelligence=lead_intelligence_payload,
+        )
+    )
+    if response.query_plan and response.execution:
+        persist_query_run(
+            session_key=payload.session_id,
+            user_question=payload.message,
+            plan=response.query_plan,
+            executed_query=response.execution.executed_query,
+            used_sources=response.used_sources,
+            confidence=response.confidence,
+            records=response.records,
+        )
+    return response.model_copy(update={"memory": updated_memory})
+
+
 @router.post("/sources", response_model=SourceRecord)
 def register_source(payload: SourceIn) -> SourceRecord:
     try:
@@ -303,6 +364,23 @@ async def import_excel(file: UploadFile = File(...)) -> ImportResult:
     leads = parse_excel(content, source_name=file.filename or "excel_upload")
     persist_batch(leads)
     return build_import_result(leads, source_type="excel", source_name=file.filename or "excel_upload")
+
+
+@router.post("/imports/csv", response_model=ImportResult)
+async def import_csv(file: UploadFile = File(...)) -> ImportResult:
+    content = await file.read()
+    leads = parse_csv(content, source_name=file.filename or "csv_upload")
+    persist_batch(leads)
+    return build_import_result(leads, source_type="csv", source_name=file.filename or "csv_upload")
+
+
+@router.post("/imports/file-preview", response_model=SourceTestResult)
+async def preview_uploaded_data_file(file: UploadFile = File(...)) -> SourceTestResult:
+    content = await file.read()
+    try:
+        return preview_uploaded_file(content, filename=file.filename or "uploaded_file")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/imports/postgres-sync", response_model=ImportResult)

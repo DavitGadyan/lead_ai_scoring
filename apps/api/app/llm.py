@@ -26,6 +26,7 @@ from .schemas import (
 def build_fallback_explanation(
     lead: LeadCanonical,
     breakdown: ScoreBreakdown,
+    directional_score: float,
     action: str,
 ) -> str:
     reasons: list[str] = []
@@ -44,18 +45,30 @@ def build_fallback_explanation(
         reasons.append("limited qualification signals")
 
     company = lead.company or "This lead"
-    return f"{company} was scored based on {', '.join(reasons)}. Recommended next action: {action}."
+    direction = (
+        "more likely to churn"
+        if directional_score < -0.15
+        else "more likely to buy again"
+        if directional_score > 0.15
+        else "currently neutral between expansion and churn"
+    )
+    return (
+        f"{company} was scored based on {', '.join(reasons)} and is {direction} "
+        f"(directional score {directional_score:.2f} on a -1 to 1 scale). "
+        f"Recommended next action: {action}."
+    )
 
 
 def generate_lead_explanation(
     lead: LeadCanonical,
     breakdown: ScoreBreakdown,
     overall_score: float,
+    directional_score: float,
     action: str,
 ) -> str:
     settings = get_settings()
     if not settings.llm_enabled or not settings.openai_api_key:
-        return build_fallback_explanation(lead, breakdown, action)
+        return build_fallback_explanation(lead, breakdown, directional_score, action)
 
     prompt = ChatPromptTemplate.from_messages(
         [
@@ -74,6 +87,17 @@ def generate_lead_explanation(
                 "employee_count={employee_count}\n"
                 "budget_range={budget_range}\n"
                 "notes={notes}\n\n"
+                "Available signals:\n"
+                "engagement_score={engagement_score}\n"
+                "health_score={health_score}\n"
+                "product_usage_score={product_usage_score}\n"
+                "support_ticket_count={support_ticket_count}\n"
+                "nps_score={nps_score}\n"
+                "days_since_last_activity={days_since_last_activity}\n"
+                "conversion_likelihood={conversion_likelihood}\n"
+                "churn_risk={churn_risk}\n"
+                "lifecycle_stage={lifecycle_stage}\n"
+                "lead_status={lead_status}\n\n"
                 "Score breakdown:\n"
                 "fit_score={fit_score}\n"
                 "intent_score={intent_score}\n"
@@ -81,8 +105,11 @@ def generate_lead_explanation(
                 "budget_score={budget_score}\n"
                 "authority_score={authority_score}\n"
                 "overall_score={overall_score}\n"
+                "directional_score={directional_score}\n"
                 "recommended_action={action}\n\n"
-                "Explain why this lead got this score and what the sales team should do next.",
+                "Analyze all available lead information and explain why the directional score falls on a -1 to 1 scale, "
+                "where -1 means likely to churn, 0 means neutral, and 1 means likely to buy a new product or expansion. "
+                "Mention the strongest supporting signals and what the sales or customer team should do next.",
             ),
         ]
     )
@@ -105,12 +132,27 @@ def generate_lead_explanation(
                 "employee_count": lead.employee_count or 0,
                 "budget_range": lead.budget_range or "Unknown",
                 "notes": lead.notes or "No notes provided",
+                "engagement_score": lead.engagement_score if lead.engagement_score is not None else "Unknown",
+                "health_score": lead.health_score if lead.health_score is not None else "Unknown",
+                "product_usage_score": lead.product_usage_score if lead.product_usage_score is not None else "Unknown",
+                "support_ticket_count": lead.support_ticket_count if lead.support_ticket_count is not None else "Unknown",
+                "nps_score": lead.nps_score if lead.nps_score is not None else "Unknown",
+                "days_since_last_activity": (
+                    lead.days_since_last_activity if lead.days_since_last_activity is not None else "Unknown"
+                ),
+                "conversion_likelihood": (
+                    lead.conversion_likelihood if lead.conversion_likelihood is not None else "Unknown"
+                ),
+                "churn_risk": lead.churn_risk if lead.churn_risk is not None else "Unknown",
+                "lifecycle_stage": lead.lifecycle_stage or "Unknown",
+                "lead_status": lead.lead_status or "Unknown",
                 "fit_score": breakdown.fit_score,
                 "intent_score": breakdown.intent_score,
                 "urgency_score": breakdown.urgency_score,
                 "budget_score": breakdown.budget_score,
                 "authority_score": breakdown.authority_score,
                 "overall_score": overall_score,
+                "directional_score": directional_score,
                 "action": action,
             }
         )
@@ -120,7 +162,7 @@ def generate_lead_explanation(
     except Exception:
         pass
 
-    return build_fallback_explanation(lead, breakdown, action)
+    return build_fallback_explanation(lead, breakdown, directional_score, action)
 
 
 def _detect_workspace_mode(message: str) -> str:
@@ -149,6 +191,7 @@ _CONNECTOR_HINTS: list[tuple[str, tuple[str, ...]]] = [
     ("hubspot", ("hubspot",)),
     ("salesforce", ("salesforce", "sfdc", "sales cloud")),
     ("zoho", ("zoho",)),
+    ("mondaycrm", ("monday", "monday.com", "monday crm")),
     ("pipedrive", ("pipedrive",)),
     ("dynamics", ("dynamics", "d365", "microsoft dynamics")),
     ("netsuite", ("netsuite",)),
@@ -409,7 +452,7 @@ def generate_workspace_chat_reply(message: str, memory: WorkspaceMemoryState) ->
             (
                 "system",
                 "You are a revenue operations copilot. Multiple CRM and data connectors can be connected; each keeps "
-                "its own dataset under a connector key (for example hubspot, salesforce, zoho) in workspace storage, "
+                "its own dataset under a connector key (such as hubspot, salesforce, zoho, mondaycrm) in workspace storage, "
                 "often in that system's natural field shape. "
                 "You only receive a capped JSON preview for this turn under datasets_preview — not the full warehouse. "
                 "Do not invent rows or fields that are not in the preview or metadata. "
